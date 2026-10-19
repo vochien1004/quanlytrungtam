@@ -8,7 +8,8 @@ import {
   ShieldCheck,
   Building2,
   ChevronDown,
-  Crown
+  Crown,
+  Menu
 } from 'lucide-react';
 
 import { UserAccount } from '../services/authService';
@@ -30,6 +31,7 @@ interface HeaderProps {
   unreadCount?: number;
   onOpenNotifications: () => void;
   onLogout: () => void;
+  onToggleMobileMenu?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -43,6 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
   unreadCount = 3,
   onOpenNotifications,
   onLogout,
+  onToggleMobileMenu,
 }) => {
   const [timeString, setTimeString] = useState<string>('');
 
@@ -86,13 +89,25 @@ export const Header: React.FC<HeaderProps> = ({
   const roleInfo = getRoleInfo();
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 w-full items-center justify-between border-b border-slate-200/90 bg-white/95 px-4 md:px-6 backdrop-blur-md shadow-xs">
-      {/* Left section: Center Info Badge or Super Admin Banner */}
-      <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 flex h-16 w-full items-center justify-between border-b border-slate-200/90 bg-white/95 px-3 sm:px-4 md:px-6 backdrop-blur-md shadow-xs">
+      {/* Left section: Mobile Hamburger Trigger + Center Info Badge / Super Admin Banner */}
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {onToggleMobileMenu && (
+          <button
+            type="button"
+            onClick={onToggleMobileMenu}
+            className="lg:hidden flex items-center justify-center min-h-[42px] min-w-[42px] -ml-1 rounded-xl text-slate-700 hover:bg-slate-100 active:bg-slate-200 transition-colors cursor-pointer"
+            aria-label="Mở menu danh mục"
+          >
+            <Menu className="w-5 h-5 text-slate-800" />
+          </button>
+        )}
+
         {isSuperAdmin ? (
-          <div className="flex items-center gap-2 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl px-3 py-1.5 text-xs font-extrabold text-amber-900 shadow-2xs">
-            <Crown className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>CỔNG SUPER ADMIN - QUẢN LÝ HỆ THỐNG &amp; TRƯỜNG HỌC</span>
+          <div className="flex items-center gap-1.5 sm:gap-2 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl px-2.5 py-1.5 text-xs font-extrabold text-amber-900 shadow-2xs truncate">
+            <Crown className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-500 shrink-0" />
+            <span className="hidden sm:inline">CỔNG SUPER ADMIN - QUẢN LÝ HỆ THỐNG &amp; TRƯỜNG HỌC</span>
+            <span className="sm:hidden font-black">SUPER ADMIN</span>
           </div>
         ) : (
           (() => {
@@ -109,14 +124,14 @@ export const Header: React.FC<HeaderProps> = ({
               code: activeCenterId || currentUser?.centerId || '',
             };
             return (
-              <div className="flex items-center gap-2 bg-gradient-to-r from-blue-50 to-indigo-50/60 border border-blue-200/90 rounded-2xl px-3 py-1.5 text-xs shadow-2xs">
-                <Building2 className="w-4 h-4 text-[#0072B5] shrink-0" />
+              <div className="flex items-center gap-1.5 sm:gap-2 bg-gradient-to-r from-blue-50 to-indigo-50/60 border border-blue-200/90 rounded-2xl px-2.5 sm:px-3 py-1.5 text-xs shadow-2xs min-w-0">
+                <Building2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#0072B5] shrink-0" />
                 <span className="hidden sm:inline font-bold text-slate-500">Cơ sở:</span>
-                <span className="font-black text-[#0B486B] max-w-[200px] sm:max-w-[300px] truncate">
+                <span className="font-black text-[#0B486B] max-w-[130px] sm:max-w-[200px] md:max-w-[300px] truncate">
                   {currentCenter.name}
                 </span>
                 {currentCenter.code && (
-                  <span className="text-[10px] bg-blue-100/90 text-[#0072B5] font-black px-1.5 py-0.5 rounded border border-blue-200 uppercase">
+                  <span className="hidden xs:inline-block text-[10px] bg-blue-100/90 text-[#0072B5] font-black px-1.5 py-0.5 rounded border border-blue-200 uppercase shrink-0">
                     {currentCenter.code}
                   </span>
                 )}

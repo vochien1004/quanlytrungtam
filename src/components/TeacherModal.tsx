@@ -193,8 +193,8 @@ export const TeacherModal: React.FC<TeacherModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs overflow-y-auto">
-      <div className="w-full max-w-xl rounded-3xl bg-white p-6 sm:p-7 shadow-2xl animate-fade-in border border-slate-100 my-8">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3 sm:p-4 backdrop-blur-xs overflow-y-auto">
+      <div className="w-full max-w-xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-4 sm:p-7 shadow-2xl animate-fade-in border border-slate-100 my-auto">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
             <div className="p-2.5 rounded-2xl bg-amber-50 text-[#F39C12]">

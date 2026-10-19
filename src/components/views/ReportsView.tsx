@@ -761,85 +761,90 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto border border-slate-300/90 rounded-2xl shadow-2xs">
-                    <table className="w-full text-center text-xs border-collapse">
-                      <thead>
-                        {/* Tiêu đề THÁNG MM/YYYY căn giữa như hình ảnh mẫu */}
-                        <tr className="bg-slate-100 text-slate-800 border-b border-slate-300 font-black">
-                          <th
-                            colSpan={3 + daysInMonthList.length + (showFinancials ? 2 : 1)}
-                            className="py-2.5 px-4 text-right text-sm font-black tracking-wider text-[#0B486B] uppercase pr-8"
-                          >
-                            THÁNG {monthStr}/{yearStr}
-                          </th>
-                        </tr>
-
-                        {/* Dòng Tiêu Đề Cột: TT | TÊN HỌC SINH | SĐT PH | 1..31 | Tổng buổi | (Tổng tiền: chỉ center_admin) */}
-                        <tr className="bg-slate-50 text-slate-800 border-b border-slate-300 font-bold divide-x divide-slate-300">
-                          <th className="py-2.5 px-2 w-10 sticky left-0 bg-slate-50 z-20">TT</th>
-                          <th className="py-2.5 px-3 min-w-[170px] text-left sticky left-10 bg-slate-50 z-20 shadow-xs">
-                            TÊN HỌC SINH
-                          </th>
-                          <th className="py-2.5 px-2 min-w-[110px] text-left sticky left-[210px] bg-slate-50 z-20 shadow-xs">
-                            SĐT PH
-                          </th>
-                          {daysInMonthList.map((d) => {
-                            const dStr = d.toString().padStart(2, '0');
-                            const iso = `${selectedMonth}-${dStr}`;
-                            const isRecorded = monthlyRecords.some(
-                              (r) => (r.date || r.sessionDate) === iso
-                            );
-                            return (
-                              <th
-                                key={d}
-                                className={`py-2 px-1 w-8 min-w-[32px] text-center font-extrabold ${
-                                  isRecorded ? 'bg-blue-50/80 text-[#0072B5]' : 'text-slate-700'
-                                }`}
-                                title={`Ngày ${dStr}/${monthStr}/${yearStr}${
-                                  isRecorded ? ' - Đã lưu điểm danh trên Firebase' : ''
-                                }`}
-                              >
-                                {d}
-                              </th>
-                            );
-                          })}
-                          <th className="py-2.5 px-2 min-w-[80px] text-center bg-blue-50/60 text-[#0072B5] font-black">
-                            Tổng buổi
-                          </th>
-                          {showFinancials && (
-                            <th className="py-2.5 px-3 min-w-[110px] text-right bg-emerald-50/70 text-emerald-900 font-black">
-                              Tổng tiền
-                            </th>
-                          )}
-                        </tr>
-                      </thead>
-
-                      <tbody className="divide-y divide-slate-300 font-medium text-slate-800">
-                        {classStudents.map((st, idx) => {
-                          if (!st) return null;
-                          let attendedCount = 0;
-
-                          return (
-                            <tr
-                              key={st.id || idx}
-                              className="hover:bg-slate-50/80 transition-colors divide-x divide-slate-300"
+                  <div>
+                    <div className="sm:hidden flex items-center justify-between text-[11px] text-[#0072B5] bg-blue-50/80 px-3 py-1.5 rounded-lg border border-blue-200 mb-2">
+                      <span>💡 <strong>Mẹo di động:</strong> Vuốt ngang để xem đủ 31 ngày</span>
+                      <span>&rarr;</span>
+                    </div>
+                    <div className="overflow-x-auto border border-slate-300/90 rounded-2xl shadow-2xs">
+                      <table className="w-full text-center text-xs border-collapse">
+                        <thead>
+                          {/* Tiêu đề THÁNG MM/YYYY căn giữa như hình ảnh mẫu */}
+                          <tr className="bg-slate-100 text-slate-800 border-b border-slate-300 font-black">
+                            <th
+                              colSpan={3 + daysInMonthList.length + (showFinancials ? 2 : 1)}
+                              className="py-2.5 px-4 text-right text-sm font-black tracking-wider text-[#0B486B] uppercase pr-8"
                             >
-                              {/* TT */}
-                              <td className="py-2 px-2 sticky left-0 bg-white z-10 font-bold text-slate-600">
-                                {idx + 1}
-                              </td>
+                              THÁNG {monthStr}/{yearStr}
+                            </th>
+                          </tr>
 
-                              {/* TÊN HỌC SINH */}
-                              <td className="py-2 px-3 text-left sticky left-10 bg-white z-10 shadow-xs font-bold text-slate-800">
-                                <div className="truncate max-w-[170px]" title={st.name}>
-                                  {st.name}
-                                </div>
-                              </td>
+                          {/* Dòng Tiêu Đề Cột: TT | TÊN HỌC SINH | SĐT PH | 1..31 | Tổng buổi | (Tổng tiền: chỉ center_admin) */}
+                          <tr className="bg-slate-50 text-slate-800 border-b border-slate-300 font-bold divide-x divide-slate-300">
+                            <th className="py-2.5 px-2 w-10 sm:sticky sm:left-0 bg-slate-50 z-20">TT</th>
+                            <th className="py-2.5 px-3 min-w-[150px] sm:min-w-[170px] text-left sm:sticky sm:left-10 bg-slate-50 z-20 shadow-xs">
+                              TÊN HỌC SINH
+                            </th>
+                            <th className="py-2.5 px-2 min-w-[100px] sm:min-w-[110px] text-left sm:sticky sm:left-[210px] bg-slate-50 z-20 shadow-xs">
+                              SĐT PH
+                            </th>
+                            {daysInMonthList.map((d) => {
+                              const dStr = d.toString().padStart(2, '0');
+                              const iso = `${selectedMonth}-${dStr}`;
+                              const isRecorded = monthlyRecords.some(
+                                (r) => (r.date || r.sessionDate) === iso
+                              );
+                              return (
+                                <th
+                                  key={d}
+                                  className={`py-2 px-1 w-8 min-w-[32px] text-center font-extrabold ${
+                                    isRecorded ? 'bg-blue-50/80 text-[#0072B5]' : 'text-slate-700'
+                                  }`}
+                                  title={`Ngày ${dStr}/${monthStr}/${yearStr}${
+                                    isRecorded ? ' - Đã lưu điểm danh trên Firebase' : ''
+                                  }`}
+                                >
+                                  {d}
+                                </th>
+                              );
+                            })}
+                            <th className="py-2.5 px-2 min-w-[80px] text-center bg-blue-50/60 text-[#0072B5] font-black">
+                              Tổng buổi
+                            </th>
+                            {showFinancials && (
+                              <th className="py-2.5 px-3 min-w-[110px] text-right bg-emerald-50/70 text-emerald-900 font-black">
+                                Tổng tiền
+                              </th>
+                            )}
+                          </tr>
+                        </thead>
 
-                              {/* SĐT PH */}
-                              <td className="py-2 px-2 text-left sticky left-[210px] bg-white z-10 shadow-xs text-slate-600 text-[11px]">
-                                {st.parentPhone || '—'}
-                              </td>
+                        <tbody className="divide-y divide-slate-300 font-medium text-slate-800">
+                          {classStudents.map((st, idx) => {
+                            if (!st) return null;
+                            let attendedCount = 0;
+
+                            return (
+                              <tr
+                                key={st.id || idx}
+                                className="hover:bg-slate-50/80 transition-colors divide-x divide-slate-300"
+                              >
+                                {/* TT */}
+                                <td className="py-2 px-2 sm:sticky sm:left-0 bg-white z-10 font-bold text-slate-600">
+                                  {idx + 1}
+                                </td>
+
+                                {/* TÊN HỌC SINH */}
+                                <td className="py-2 px-3 text-left sm:sticky sm:left-10 bg-white z-10 shadow-xs font-bold text-slate-800">
+                                  <div className="truncate max-w-[150px] sm:max-w-[170px]" title={st.name}>
+                                    {st.name}
+                                  </div>
+                                </td>
+
+                                {/* SĐT PH */}
+                                <td className="py-2 px-2 text-left sm:sticky sm:left-[210px] bg-white z-10 shadow-xs text-slate-600 text-[11px]">
+                                  {st.parentPhone || '—'}
+                                </td>
 
                               {/* Các cột ngày từ 1 đến 31 (chuẩn theo hình ảnh) */}
                               {daysInMonthList.map((d) => {
@@ -980,7 +985,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                       </tfoot>
                     </table>
                   </div>
-                )}
+                </div>
+              )}
 
                 {/* 3. Phần Chú thích ký hiệu & Công thức tính (Đúng như ảnh mẫu) */}
                 <div className="pt-2 text-xs text-slate-600 space-y-1.5 border-t border-slate-100">

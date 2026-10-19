@@ -289,8 +289,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
-      <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl animate-fade-in border border-slate-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3 sm:p-4 backdrop-blur-xs">
+      <div className="w-full max-w-xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl bg-white p-4 sm:p-6 shadow-2xl animate-fade-in border border-slate-100">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div className="flex items-center gap-2">
             <div className="p-2 rounded-xl bg-emerald-50 text-[#00A86B]">

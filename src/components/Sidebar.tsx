@@ -17,7 +17,8 @@ import {
   PhoneCall,
   KeyRound,
   Building2,
-  Crown
+  Crown,
+  X
 } from 'lucide-react';
 import { BrandLogo } from './BrandLogo';
 import { UserRole } from './Header';
@@ -92,12 +93,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
         />
       )}
 
-      <aside className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-white border-r border-slate-200 transition-transform duration-300 lg:static lg:translate-x-0 ${
+      <aside className={`fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] lg:w-64 flex-col bg-white border-r border-slate-200 shadow-2xl lg:shadow-none transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${
         isMobileOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
         {/* Brand Logo Header */}
         <div className="flex h-20 items-center justify-between px-4 border-b border-slate-100 bg-gradient-to-r from-blue-50/50 to-white">
           <BrandLogo size="md" />
+          <button
+            type="button"
+            onClick={onCloseMobile}
+            className="lg:hidden p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 active:bg-slate-200 transition-colors cursor-pointer"
+            aria-label="Đóng menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Navigation list */}

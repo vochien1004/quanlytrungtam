@@ -1392,44 +1392,47 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
         </div>
 
         {/* Feature Tab Navigation Buttons */}
-        <div className="flex items-center rounded-xl bg-slate-100 p-1 border border-slate-200/80 shadow-inner">
+        <div className="w-full sm:w-auto grid grid-cols-3 sm:flex items-center rounded-xl bg-slate-100 p-1 border border-slate-200/80 shadow-inner gap-1">
           <button
             type="button"
             onClick={() => setActiveTab('attendance')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer text-center ${
               activeTab === 'attendance'
                 ? 'bg-white text-[#00A86B] shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <ClipboardCheck className="w-4 h-4 text-[#00A86B]" />
-            <span>1. Điểm Danh &amp; Sĩ Số</span>
+            <ClipboardCheck className="w-4 h-4 text-[#00A86B] shrink-0" />
+            <span className="hidden sm:inline">1. Điểm Danh &amp; Sĩ Số</span>
+            <span className="sm:hidden text-[11px]">1. Điểm danh</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('homework')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer text-center ${
               activeTab === 'homework'
                 ? 'bg-white text-[#0072B5] shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <BookMarked className="w-4 h-4 text-[#0072B5]" />
-            <span>2. Giao Bài Tập</span>
+            <BookMarked className="w-4 h-4 text-[#0072B5] shrink-0" />
+            <span className="hidden sm:inline">2. Giao Bài Tập</span>
+            <span className="sm:hidden text-[11px]">2. Giao bài</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('grading')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer text-center ${
               activeTab === 'grading'
                 ? 'bg-white text-[#F39C12] shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <Award className="w-4 h-4 text-[#F39C12]" />
-            <span>3. Chấm Điểm &amp; Nhận Xét</span>
+            <Award className="w-4 h-4 text-[#F39C12] shrink-0" />
+            <span className="hidden sm:inline">3. Chấm Điểm &amp; Nhận Xét</span>
+            <span className="sm:hidden text-[11px]">3. Chấm điểm</span>
           </button>
         </div>
       </div>
@@ -1666,11 +1669,11 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
                   <button
                     type="button"
                     onClick={handleMarkAllPresent}
-                    className="flex items-center gap-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-[#00A86B] border border-emerald-300 px-3.5 py-2 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-[#00A86B] border border-emerald-300 px-3.5 py-2.5 text-xs font-bold transition-all shadow-2xs min-h-[42px] cursor-pointer"
                     title="Đánh dấu nhanh tất cả học sinh trong lớp có mặt"
                   >
                     <Zap className="w-4 h-4 text-[#00A86B]" />
@@ -1681,7 +1684,7 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                     type="button"
                     disabled={isSyncing}
                     onClick={handleSyncAttendanceToAdmin}
-                    className={`flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition-all shadow-2xs cursor-pointer disabled:opacity-50 ${
+                    className={`flex-1 sm:flex-none flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold transition-all shadow-2xs min-h-[42px] cursor-pointer disabled:opacity-50 ${
                       isAttendanceUnsaved
                         ? 'bg-orange-500 hover:bg-orange-600 text-white shadow-md shadow-orange-500/30 ring-2 ring-orange-400/50'
                         : 'bg-[#00A86B] hover:bg-emerald-700 text-white'
@@ -1742,30 +1745,30 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                             </div>
 
                             {/* Attendance Toggles: 2 nút Có mặt và Vắng mặt */}
-                            <div className="flex items-center gap-2 shrink-0">
+                            <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto shrink-0">
                               <button
                                 type="button"
                                 onClick={() => handleSetStudentStatus(st.id, 'present')}
-                                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                                className={`flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2.5 rounded-xl text-xs font-bold transition-all border min-h-[42px] cursor-pointer ${
                                   isPresent
                                     ? 'bg-[#00A86B] text-white border-[#00A86B] shadow-2xs ring-2 ring-emerald-200'
                                     : 'bg-white text-slate-600 border-slate-200 hover:border-[#00A86B] hover:text-[#00A86B]'
                                 }`}
                               >
-                                <CheckCircle2 className="w-4 h-4" />
+                                <CheckCircle2 className="w-4 h-4 shrink-0" />
                                 <span>Có mặt</span>
                               </button>
 
                               <button
                                 type="button"
                                 onClick={() => handleSetStudentStatus(st.id, 'absent')}
-                                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                                className={`flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2.5 rounded-xl text-xs font-bold transition-all border min-h-[42px] cursor-pointer ${
                                   isAbsent
                                     ? 'bg-[#E74C3C] text-white border-[#E74C3C] shadow-2xs ring-2 ring-rose-200'
                                     : 'bg-white text-slate-600 border-slate-200 hover:border-[#E74C3C] hover:text-[#E74C3C]'
                                 }`}
                               >
-                                <XCircle className="w-4 h-4" />
+                                <XCircle className="w-4 h-4 shrink-0" />
                                 <span>Vắng mặt</span>
                               </button>
                             </div>
@@ -1879,24 +1882,29 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                   </p>
                 </div>
               ) : (
-                <div className="overflow-x-auto border border-slate-300/80 rounded-xl shadow-2xs">
-                  <table className="w-full text-center text-xs border-collapse">
-                    <thead>
-                      {/* Tiêu đề THÁNG như hình ảnh mẫu */}
-                      <tr className="bg-slate-100 text-slate-800 border-b border-slate-300 font-black">
-                        <th colSpan={3 + daysInMonthList.length + (showFinancials ? 2 : 1)} className="py-2.5 px-4 text-center text-sm font-black tracking-wider text-[#0B486B]">
-                          THÁNG {selectedMonth.split('-')[1]}/{selectedMonth.split('-')[0]}
-                        </th>
-                      </tr>
-                      {/* Dòng Tiêu Đề Cột: TT | TÊN HỌC SINH | SĐT PH | 1..31 | Tổng buổi | (Tổng tiền: chỉ center_admin) */}
-                      <tr className="bg-slate-50 text-slate-800 border-b border-slate-300 font-bold divide-x divide-slate-300">
-                        <th className="py-2.5 px-2 w-10 sticky left-0 bg-slate-50 z-20">TT</th>
-                        <th className="py-2.5 px-3 min-w-[170px] text-left sticky left-10 bg-slate-50 z-20 shadow-xs">
-                          TÊN HỌC SINH
-                        </th>
-                        <th className="py-2.5 px-2 min-w-[110px] text-left sticky left-[210px] bg-slate-50 z-20 shadow-xs">
-                          SĐT PH
-                        </th>
+                <div className="space-y-1.5">
+                  <div className="sm:hidden flex items-center justify-between text-[11px] text-[#0072B5] bg-blue-50/80 px-3 py-1.5 rounded-lg border border-blue-200">
+                    <span>💡 <strong>Mẹo di động:</strong> Vuốt ngang để xem đủ 31 ngày</span>
+                    <span>&rarr;</span>
+                  </div>
+                  <div className="overflow-x-auto border border-slate-300/80 rounded-xl shadow-2xs">
+                    <table className="w-full text-center text-xs border-collapse">
+                      <thead>
+                        {/* Tiêu đề THÁNG như hình ảnh mẫu */}
+                        <tr className="bg-slate-100 text-slate-800 border-b border-slate-300 font-black">
+                          <th colSpan={3 + daysInMonthList.length + (showFinancials ? 2 : 1)} className="py-2.5 px-4 text-center text-sm font-black tracking-wider text-[#0B486B]">
+                            THÁNG {selectedMonth.split('-')[1]}/{selectedMonth.split('-')[0]}
+                          </th>
+                        </tr>
+                        {/* Dòng Tiêu Đề Cột: TT | TÊN HỌC SINH | SĐT PH | 1..31 | Tổng buổi | (Tổng tiền: chỉ center_admin) */}
+                        <tr className="bg-slate-50 text-slate-800 border-b border-slate-300 font-bold divide-x divide-slate-300">
+                          <th className="py-2.5 px-2 w-10 sm:sticky sm:left-0 bg-slate-50 z-20">TT</th>
+                          <th className="py-2.5 px-3 min-w-[150px] sm:min-w-[170px] text-left sm:sticky sm:left-10 bg-slate-50 z-20 shadow-xs">
+                            TÊN HỌC SINH
+                          </th>
+                          <th className="py-2.5 px-2 min-w-[100px] sm:min-w-[110px] text-left sm:sticky sm:left-[210px] bg-slate-50 z-20 shadow-xs">
+                            SĐT PH
+                          </th>
                         {daysInMonthList.map((d) => {
                           const dStr = d.toString().padStart(2, '0');
                           const iso = `${selectedMonth}-${dStr}`;
@@ -1932,19 +1940,19 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                         return (
                           <tr key={st.id || idx} className="hover:bg-slate-50/80 transition-colors divide-x divide-slate-300">
                             {/* TT */}
-                            <td className="py-2 px-2 sticky left-0 bg-white z-10 font-bold text-slate-600">
+                            <td className="py-2 px-2 sm:sticky sm:left-0 bg-white z-10 font-bold text-slate-600">
                               {idx + 1}
                             </td>
 
                             {/* TÊN HỌC SINH */}
-                            <td className="py-2 px-3 text-left sticky left-10 bg-white z-10 shadow-xs font-bold text-slate-800">
-                              <div className="truncate max-w-[170px]" title={st.name}>
+                            <td className="py-2 px-3 text-left sm:sticky sm:left-10 bg-white z-10 shadow-xs font-bold text-slate-800">
+                              <div className="truncate max-w-[150px] sm:max-w-[170px]" title={st.name}>
                                 {st.name}
                               </div>
                             </td>
 
                             {/* SĐT PH */}
-                            <td className="py-2 px-2 text-left sticky left-[210px] bg-white z-10 shadow-xs text-slate-600 text-[11px]">
+                            <td className="py-2 px-2 text-left sm:sticky sm:left-[210px] bg-white z-10 shadow-xs text-slate-600 text-[11px]">
                               {st.parentPhone || '—'}
                             </td>
 
@@ -2062,7 +2070,8 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                     </tfoot>
                   </table>
                 </div>
-              )}
+              </div>
+            )}
 
               {/* Chú thích bảng điểm danh & học phí */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-[11px] text-slate-500">

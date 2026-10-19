@@ -190,53 +190,53 @@ export const AdminManagementHub: React.FC<AdminManagementHubProps> = ({
       <div className="space-y-4">
           {/* Sub-Tabs: Lớp học | Giáo viên | Học sinh */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar w-full sm:w-auto pb-1 sm:pb-0">
               <button
                 type="button"
                 onClick={() => { setActiveTab('class'); setSearchTerm(''); }}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl text-xs font-bold transition-all border-b-2 ${
+                className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-t-xl text-xs font-bold transition-all border-b-2 whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'class'
                     ? 'border-[#0072B5] text-[#0072B5] bg-blue-50/70 font-extrabold'
                     : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
                 }`}
               >
-                <School className="w-4 h-4 text-[#0072B5]" />
-                <span>Danh Sách Lớp Học ({classes.length})</span>
+                <School className="w-4 h-4 text-[#0072B5] shrink-0" />
+                <span>Lớp Học ({classes.length})</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => { setActiveTab('teacher'); setSearchTerm(''); }}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl text-xs font-bold transition-all border-b-2 ${
+                className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-t-xl text-xs font-bold transition-all border-b-2 whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'teacher'
                     ? 'border-[#F39C12] text-[#B7791F] bg-amber-50/70 font-extrabold'
                     : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
                 }`}
               >
-                <Users className="w-4 h-4 text-[#F39C12]" />
-                <span>Danh Sách Giáo Viên ({teachers.length})</span>
+                <Users className="w-4 h-4 text-[#F39C12] shrink-0" />
+                <span>Giáo Viên ({teachers.length})</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => { setActiveTab('student'); setSearchTerm(''); }}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl text-xs font-bold transition-all border-b-2 ${
+                className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-t-xl text-xs font-bold transition-all border-b-2 whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'student'
                     ? 'border-[#00A86B] text-[#00A86B] bg-emerald-50/70 font-extrabold'
                     : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
                 }`}
               >
-                <GraduationCap className="w-4 h-4 text-[#00A86B]" />
-                <span>Danh Sách Học Sinh ({students.length})</span>
+                <GraduationCap className="w-4 h-4 text-[#00A86B] shrink-0" />
+                <span>Học Sinh ({students.length})</span>
               </button>
             </div>
 
             {/* Quick Action Buttons for Current Tab */}
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 w-full sm:w-auto overflow-x-auto no-scrollbar">
               <button
                 type="button"
                 onClick={() => onOpenImport(activeTab)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 px-3 py-2 text-xs font-bold transition-all shadow-xs"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 px-3 py-2 text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                 <span>Nhập Excel / CSV</span>

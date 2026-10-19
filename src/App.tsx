@@ -97,7 +97,21 @@ import {
   purgeLocalTestCache,
 } from './services/authService';
 
-import { Menu, CheckCircle2, Info, AlertTriangle } from 'lucide-react';
+import { 
+  Menu, 
+  CheckCircle2, 
+  Info, 
+  AlertTriangle,
+  LayoutDashboard,
+  School,
+  Users,
+  GraduationCap,
+  ClipboardCheck,
+  BookMarked,
+  Award,
+  Bell,
+  HeartHandshake
+} from 'lucide-react';
 
 export default function App() {
   // Authentication & Session State
@@ -1091,20 +1105,8 @@ export default function App() {
       />
 
       {/* Main Content Viewport */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Mobile Header Bar */}
-        <div className="lg:hidden flex items-center justify-between h-14 px-4 bg-white border-b border-slate-200">
-          <button
-            type="button"
-            onClick={() => setIsMobileSidebarOpen(true)}
-            className="p-1.5 rounded-xl text-slate-600 hover:bg-slate-100"
-          >
-            <Menu className="w-6 h-6" />
-          </button>
-          <span className="ml-2 font-extrabold text-sm text-[#0B486B]">Hệ Thống Quản Lý Đa Trung Tâm</span>
-        </div>
-
-        {/* Header Bar */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        {/* Unified Responsive Header Bar */}
         <Header
           currentRole={currentRole}
           currentUser={currentUser}
@@ -1121,10 +1123,11 @@ export default function App() {
           unreadCount={2}
           onOpenNotifications={() => setIsNotificationModalOpen(true)}
           onLogout={handleLogout}
+          onToggleMobileMenu={() => setIsMobileSidebarOpen(true)}
         />
 
         {/* Scrollable Main Workspace */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 space-y-6">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-5 lg:p-8 space-y-5 pb-24 lg:pb-8">
           <Suspense fallback={<ViewLoadingFallback />}>
             {/* TRƯỜNG HỢP 1: GIÁO VIÊN ĐĂNG NHẬP -> CHỈ HIỂN THỊ WORKSTATION GIÁO VIÊN VÀ CÁC MỤC CON */}
           {isCurrentAUserTeacher ? (
@@ -1339,7 +1342,6 @@ export default function App() {
           )}
           </Suspense>
         </main>
-      </div>
 
       {/* Global Modals - Phân quyền hiển thị: Chỉ Admin mới mở các modal tạo/sửa dữ liệu tổng thể */}
       <Suspense fallback={null}>
@@ -1405,6 +1407,141 @@ export default function App() {
           onImportBatch={handleBatchImport}
         />
       </Suspense>
+
+        {/* Mobile Quick Bottom Navigation Dock (Chỉ hiển thị trên điện thoại / màn hình nhỏ lg:hidden) */}
+        <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200/90 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] px-2 py-1.5 flex items-center justify-around">
+          {isCurrentAUserTeacher ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setActiveNav('teacher-attendance')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'teacher-attendance' ? 'text-[#00A86B] font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <ClipboardCheck className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Điểm danh</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNav('teacher-assignments')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'teacher-assignments' ? 'text-[#0072B5] font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <BookMarked className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Giao bài</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNav('teacher-grading')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'teacher-grading' ? 'text-amber-600 font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <Award className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Chấm điểm</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsNotificationModalOpen(true)}
+                className="flex flex-col items-center justify-center flex-1 py-1 text-slate-500 font-semibold rounded-xl transition-all cursor-pointer"
+              >
+                <Bell className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Thông báo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="flex flex-col items-center justify-center flex-1 py-1 text-slate-500 font-semibold rounded-xl transition-all cursor-pointer"
+              >
+                <Menu className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Menu</span>
+              </button>
+            </>
+          ) : isCurrentAUserParent ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setActiveNav('parent-portal')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'parent-portal' ? 'text-[#0072B5] font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <HeartHandshake className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Sổ liên lạc</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsNotificationModalOpen(true)}
+                className="flex flex-col items-center justify-center flex-1 py-1 text-slate-500 font-semibold rounded-xl transition-all cursor-pointer"
+              >
+                <Bell className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Thông báo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="flex flex-col items-center justify-center flex-1 py-1 text-slate-500 font-semibold rounded-xl transition-all cursor-pointer"
+              >
+                <Menu className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Menu</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => setActiveNav(currentUser?.role === 'super_admin' ? 'super-admin-portal' : 'dashboard')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'dashboard' || activeNav === 'super-admin-portal' ? 'text-[#0072B5] font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <LayoutDashboard className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Tổng quan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNav('admin-classes')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'admin-classes' ? 'text-[#0072B5] font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <School className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Lớp học</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNav('admin-teachers')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'admin-teachers' ? 'text-amber-600 font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <Users className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Giáo viên</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNav('admin-students')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'admin-students' ? 'text-emerald-600 font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <GraduationCap className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Học sinh</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="flex flex-col items-center justify-center flex-1 py-1 text-slate-500 font-semibold rounded-xl transition-all cursor-pointer"
+              >
+                <Menu className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Menu</span>
+              </button>
+            </>
+          )}
+        </nav>
+      </div>
     </div>
   );
 }

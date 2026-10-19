@@ -39,8 +39,8 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
       : 'Dữ liệu sau khi xóa sẽ không thể phục hồi lại. Vui lòng kiểm tra kỹ trước khi xác nhận.';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs animate-fade-in">
-      <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 my-8 space-y-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-xs animate-fade-in">
+      <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-4 sm:p-6 shadow-2xl border border-slate-100 my-auto space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div className="flex items-center gap-2.5">

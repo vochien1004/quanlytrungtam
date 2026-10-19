@@ -231,16 +231,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-slate-900 via-[#0B486B] to-slate-900 p-4 sm:p-6 lg:p-8 relative overflow-hidden">
+    <div className="min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-slate-900 via-[#0B486B] to-slate-900 p-3 sm:p-6 lg:p-8 relative overflow-y-auto">
       {/* Ambient background glow */}
       <div className="absolute -top-32 -left-32 w-96 h-96 rounded-full bg-[#0072B5]/30 blur-3xl pointer-events-none" />
       <div className="absolute -bottom-32 -right-32 w-96 h-96 rounded-full bg-[#00A86B]/25 blur-3xl pointer-events-none" />
 
-      <div className="w-full max-w-md z-10 animate-fade-in my-6">
-        <div className="rounded-3xl bg-white/95 backdrop-blur-xl p-6 sm:p-8 shadow-2xl border border-white/40">
+      <div className="w-full max-w-md z-10 animate-fade-in my-3 sm:my-6">
+        <div className="rounded-3xl bg-white/95 backdrop-blur-xl p-5 sm:p-8 shadow-2xl border border-white/40">
           {/* Logo & Header */}
-          <div className="text-center mb-5">
-            <div className="inline-flex justify-center mb-3">
+          <div className="text-center mb-4 sm:mb-5">
+            <div className="inline-flex justify-center mb-2.5 sm:mb-3">
               <BrandLogo size="lg" />
             </div>
             <h1 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight">

@@ -1284,8 +1284,8 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       {/* MODAL 1: GỬI ĐƠN XIN NGHỈ HỌC (Leave Request Modal)                        */}
       {/* ========================================================================= */}
       {isLeaveModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 sm:p-7 shadow-2xl animate-fade-in border-2 border-amber-300">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-5 sm:p-7 shadow-2xl animate-fade-in border-2 border-amber-300">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-2xl bg-amber-100 text-[#F39C12]">
@@ -1390,8 +1390,8 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       {/* MODAL 2: XEM CHI TIẾT BÀI TẬP VỀ NHÀ                                      */}
       {/* ========================================================================= */}
       {viewingAssignment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl animate-fade-in border-2 border-blue-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-5 sm:p-6 shadow-2xl animate-fade-in border-2 border-blue-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-xl bg-blue-50 text-[#0072B5]">
