@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hệ Thống Quản Lý Trung Tâm</title>
+    <meta name="description" content="Hệ thống quản lý đa vai trò (Admin, Giáo viên, Phụ huynh) cho Trung tâm với điểm danh, bài tập, chấm điểm và sổ liên lạc điện tử." />
+    <meta property="og:title" content="Hệ Thống Quản Lý Trung Tâm" />
+    <meta property="og:description" content="Hệ thống quản lý đa vai trò (Admin, Giáo viên, Phụ huynh) cho Trung tâm với điểm danh, bài tập, chấm điểm và sổ liên lạc điện tử." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript>
+      <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    </noscript>
+  </head>
+  <body style="margin: 0; padding: 0; background-color: #0f172a;">
+    <div id="root">
+      <!-- Splash Screen tức thì 0ms chống màn hình trắng khi tải ứng dụng -->
+      <div id="initial-splash" style="min-height: 100vh; width: 100vw; display: flex; flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(135deg, #0b192c 0%, #0B486B 50%, #083652 100%); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Plus Jakarta Sans', sans-serif; color: #ffffff; text-align: center; box-sizing: border-box; padding: 24px;">
+        <div style="position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 24px;">
+          <div style="position: absolute; width: 96px; height: 96px; border-radius: 28px; background: rgba(0, 168, 107, 0.4); filter: blur(20px); animation: splashPulse 2s ease-in-out infinite alternate;"></div>
+          <div style="position: relative; width: 72px; height: 72px; border-radius: 22px; background: linear-gradient(135deg, #0072B5 0%, #00A86B 100%); display: flex; align-items: center; justify-content: center; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border: 1.5px solid rgba(255, 255, 255, 0.25);">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"></path>
+              <path d="M6 6h10"></path>
+              <path d="M6 10h10"></path>
+              <path d="M6 14h6"></path>
+            </svg>
+          </div>
+        </div>
+
+        <h1 style="margin: 0 0 8px 0; font-size: 21px; font-weight: 800; letter-spacing: -0.3px; color: #ffffff; text-shadow: 0 2px 4px rgba(0,0,0,0.25);">
+          Hệ Thống Quản Lý Trung Tâm
+        </h1>
+        <p style="margin: 0 0 26px 0; font-size: 13px; color: rgba(255, 255, 255, 0.8); font-weight: 500; max-width: 320px; line-height: 1.5;">
+          Đang khởi tạo không gian làm việc đa vai trò
+        </p>
+
+        <!-- Thanh tiến trình phát sáng -->
+        <div style="width: 190px; height: 5px; background: rgba(255, 255, 255, 0.15); border-radius: 9999px; overflow: hidden; position: relative;">
+          <div style="position: absolute; top: 0; left: 0; height: 100%; width: 45%; background: linear-gradient(90deg, #00A86B, #38bdf8); border-radius: 9999px; animation: splashProgress 1.4s ease-in-out infinite;"></div>
+        </div>
+
+        <span style="display: block; margin-top: 14px; font-size: 11px; color: rgba(255, 255, 255, 0.65); font-weight: 500; letter-spacing: 0.3px;">
+          Đang kết nối &amp; tải dữ liệu...
+        </span>
+      </div>
+
+      <style>
+        @keyframes splashPulse {
+          0% { transform: scale(0.92); opacity: 0.4; }
+          100% { transform: scale(1.15); opacity: 0.85; }
+        }
+        @keyframes splashProgress {
+          0% { left: -45%; width: 35%; }
+          50% { left: 30%; width: 55%; }
+          100% { left: 100%; width: 35%; }
+        }
+      </style>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Allow read & write to all collections for application operations & bootstrapping
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /usernames/{username} {
+      allow read, write: if true;
+    }
+
+    match /global_users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /accounts/{accId} {
+      allow read, write: if true;
+    }
+
+    match /centers/{centerId} {
+      allow read, write: if true;
+
+      match /{allSubcollections=**} {
+        allow read, write: if true;
+      }
+    }
+
+    match /renewal_requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+  }
+}

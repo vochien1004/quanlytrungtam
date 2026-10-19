@@ -1,0 +1,6 @@
+{
+  "name": "Hệ Thống Quản Lý Trung Tâm",
+  "description": "Hệ thống quản lý đa vai trò (Admin, Giáo viên, Phụ huynh) cho Trung tâm với điểm danh, bài tập, chấm điểm và sổ liên lạc điện tử.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,136 @@
+{
+  "entities": {
+    "Center": {
+      "title": "Center",
+      "description": "Trung tâm dạy thêm / cơ sở thuộc hệ thống Đa Trung Tâm",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "code"]
+    },
+    "GlobalUser": {
+      "title": "GlobalUser",
+      "description": "Tài khoản toàn hệ thống hỗ trợ đăng nhập và điều hướng Trung tâm",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["super_admin", "center_admin", "teacher", "parent"] },
+        "centerId": { "type": "string" }
+      },
+      "required": ["uid", "role"]
+    },
+    "Class": {
+      "title": "Class",
+      "description": "Lớp học thuộc sub-collection của một trung tâm",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "classCode": { "type": "string" },
+        "name": { "type": "string" },
+        "subject": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "room": { "type": "string" },
+        "schedule": { "type": "string" },
+        "studentCount": { "type": "number" },
+        "maxCapacity": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    },
+    "User": {
+      "title": "User",
+      "description": "Tài khoản người dùng (Center Admin, Giáo viên, Phụ huynh) thuộc sub-collection của một trung tâm",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string" },
+        "username": { "type": "string" },
+        "mainClassId": { "type": "string" },
+        "mainClassName": { "type": "string" }
+      }
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Học sinh thuộc sub-collection của một trung tâm",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentCode": { "type": "string" },
+        "name": { "type": "string" },
+        "classId": { "type": "string" },
+        "className": { "type": "string" },
+        "parentName": { "type": "string" },
+        "parentPhone": { "type": "string" },
+        "attendanceStatus": { "type": "string" },
+        "gpa": { "type": "number" }
+      }
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Sổ điểm danh thuộc sub-collection của một trung tâm",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "classId": { "type": "string" },
+        "date": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "records": { "type": "array" }
+      }
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Bài tập thuộc sub-collection của một trung tâm",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "classId": { "type": "string" },
+        "teacherId": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/centers/{centerId}": {
+      "schema": { "$ref": "#/entities/Center" },
+      "description": "Danh sách các cơ sở / trung tâm thuộc hệ thống Đa Trung Tâm"
+    },
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/GlobalUser" },
+      "description": "Root Collection Index: chứa dữ liệu định danh và định tuyến tối thiểu (uid, centerId, role, status, username, email)"
+    },
+    "/centers/{centerId}/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Sub-collection người dùng thuộc trung tâm"
+    },
+    "/centers/{centerId}/classes/{classId}": {
+      "schema": { "$ref": "#/entities/Class" },
+      "description": "Sub-collection lớp học thuộc trung tâm"
+    },
+    "/centers/{centerId}/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Sub-collection học sinh thuộc trung tâm"
+    },
+    "/centers/{centerId}/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/Attendance" },
+      "description": "Sub-collection điểm danh thuộc trung tâm"
+    },
+    "/centers/{centerId}/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Sub-collection bài tập thuộc trung tâm"
+    }
+  }
+}
