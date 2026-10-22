@@ -53,7 +53,12 @@ import {
   AssignmentSubmission,
 } from '../data/mockData';
 export type {
+  Center,
   CenterDocument,
+  Student,
+  StudentDocument,
+  Teacher,
+  TeacherDocument,
   ClassDocument,
   AttendanceDocument,
   StudentAttendanceEntry,
@@ -267,7 +272,7 @@ const migratedCentersInSession = new Set<string>();
 
 /**
  * Tự động chuẩn hóa Schema NoSQL:
- * Chuyển đổi toàn bộ các trường mảng (`classes`, `assignments`, `attendance`) còn tồn đọng
+ * Chuyển đổi toàn bộ các trường mảng (`students`, `teachers`, `classes`, `assignments`, `attendance`) còn tồn đọng
  * trong Document `/centers/{centerId}` sang các Subcollection tương ứng và xóa bỏ hoàn toàn
  * các trường mảng khỏi Document trung tâm bằng `deleteField()` để tránh vượt giới hạn 1MB/doc.
  */
@@ -282,18 +287,50 @@ export async function migrateLegacyCenterArrays(centerId: string): Promise<void>
     if (!centerSnap.exists()) return;
 
     const data = centerSnap.data();
+    const hasLegacyStudents = Array.isArray(data?.students);
+    const hasLegacyTeachers = Array.isArray(data?.teachers);
     const hasLegacyClasses = Array.isArray(data?.classes);
     const hasLegacyAssignments = Array.isArray(data?.assignments);
     const hasLegacyAttendance = Array.isArray(data?.attendance);
 
-    if (!hasLegacyClasses && !hasLegacyAssignments && !hasLegacyAttendance) {
+    if (
+      !hasLegacyStudents &&
+      !hasLegacyTeachers &&
+      !hasLegacyClasses &&
+      !hasLegacyAssignments &&
+      !hasLegacyAttendance
+    ) {
       return;
     }
 
     const batch = writeBatch(db);
     let opCount = 0;
 
-    // 1. Di trú mảng classes -> Subcollection /centers/{centerId}/classes/{classId}
+    // 1. Di trú mảng students -> Subcollection /centers/{centerId}/students/{studentId}
+    if (hasLegacyStudents && data.students.length > 0) {
+      for (const std of data.students) {
+        if (std && (std.id || std.studentCode || std.name) && opCount < 450) {
+          const stdId = String(std.id || `student_${std.studentCode || Date.now()}_${opCount}`);
+          const stdRef = doc(db, 'centers', validCenterId, 'students', stdId);
+          batch.set(stdRef, sanitizeForArray({ ...std, id: stdId, centerId: validCenterId }), { merge: true });
+          opCount++;
+        }
+      }
+    }
+
+    // 2. Di trú mảng teachers -> Subcollection /centers/{centerId}/teachers/{teacherId}
+    if (hasLegacyTeachers && data.teachers.length > 0) {
+      for (const tch of data.teachers) {
+        if (tch && (tch.id || tch.uid || tch.username || tch.name) && opCount < 450) {
+          const tchId = String(tch.id || tch.uid || tch.username || `teacher_${Date.now()}_${opCount}`);
+          const tchRef = doc(db, 'centers', validCenterId, 'teachers', tchId);
+          batch.set(tchRef, sanitizeForArray({ ...tch, id: tchId, centerId: validCenterId }), { merge: true });
+          opCount++;
+        }
+      }
+    }
+
+    // 3. Di trú mảng classes -> Subcollection /centers/{centerId}/classes/{classId}
     if (hasLegacyClasses && data.classes.length > 0) {
       for (const cls of data.classes) {
         if (cls && cls.id && opCount < 450) {
@@ -304,7 +341,7 @@ export async function migrateLegacyCenterArrays(centerId: string): Promise<void>
       }
     }
 
-    // 2. Di trú mảng assignments -> Subcollection /centers/{centerId}/assignments/{assignmentId}
+    // 4. Di trú mảng assignments -> Subcollection /centers/{centerId}/assignments/{assignmentId}
     if (hasLegacyAssignments && data.assignments.length > 0) {
       for (const asg of data.assignments) {
         if (asg && asg.id && opCount < 450) {
@@ -315,7 +352,7 @@ export async function migrateLegacyCenterArrays(centerId: string): Promise<void>
       }
     }
 
-    // 3. Di trú mảng attendance -> Subcollection /centers/{centerId}/attendance/{attendanceId}
+    // 5. Di trú mảng attendance -> Subcollection /centers/{centerId}/attendance/{attendanceId}
     if (hasLegacyAttendance && data.attendance.length > 0) {
       for (const att of data.attendance) {
         if (att && opCount < 450) {
@@ -329,17 +366,19 @@ export async function migrateLegacyCenterArrays(centerId: string): Promise<void>
       }
     }
 
-    // 4. Loại bỏ triệt để các trường mảng khỏi Document trung tâm `/centers/{centerId}`
+    // 6. Xóa hoàn toàn các trường mảng (`students`, `teachers`, `classes`, `assignments`, `attendance`) khỏi Document `/centers/{centerId}`
     const fieldDeletions: Record<string, any> = {
       updatedAt: serverTimestamp(),
     };
+    if (hasLegacyStudents) fieldDeletions.students = deleteField();
+    if (hasLegacyTeachers) fieldDeletions.teachers = deleteField();
     if (hasLegacyClasses) fieldDeletions.classes = deleteField();
     if (hasLegacyAssignments) fieldDeletions.assignments = deleteField();
     if (hasLegacyAttendance) fieldDeletions.attendance = deleteField();
 
     batch.update(centerDocRef, fieldDeletions);
     await batch.commit();
-    console.log(`✓ [NoSQL Architect] Đã di trú dữ liệu sang Subcollection và xóa trường mảng dư thừa tại /centers/${validCenterId}`);
+    console.log(`✓ [NoSQL Architect] Đã di trú dữ liệu sang Subcollection và xóa sạch các trường mảng tại /centers/${validCenterId}`);
   } catch (err: any) {
     console.warn(`Lưu ý khi chuẩn hóa schema NoSQL cho trung tâm [${validCenterId}]:`, err?.message);
   }
@@ -356,8 +395,10 @@ export function getRealtimeCenters(
       const items: CenterItem[] = snapshot.docs.map((docSnap) => {
         const rawData = docSnap.data() as any;
 
-        // Nếu phát hiện còn trường mảng cũ trong document center, tự động di trú sang subcollection và xóa mảng
+        // Nếu phát hiện còn bất kỳ trường mảng cũ nào trong document center, tự động di trú sang subcollection và xóa mảng
         if (
+          Array.isArray(rawData?.students) ||
+          Array.isArray(rawData?.teachers) ||
           Array.isArray(rawData?.classes) ||
           Array.isArray(rawData?.assignments) ||
           Array.isArray(rawData?.attendance)
@@ -366,7 +407,14 @@ export function getRealtimeCenters(
         }
 
         // Loại bỏ hoàn toàn các trường mảng khỏi object CenterItem trong bộ nhớ
-        const { classes: _c, assignments: _asg, attendance: _att, ...cleanCenterMetadata } = rawData;
+        const {
+          students: _std,
+          teachers: _tch,
+          classes: _c,
+          assignments: _asg,
+          attendance: _att,
+          ...cleanCenterMetadata
+        } = rawData;
 
         return {
           id: docSnap.id,
@@ -384,16 +432,31 @@ export function getRealtimeCenters(
   );
 }
 
+/**
+ * Tạo mới một Trung tâm vào Root Collection `/centers/{centerId}`
+ * TUYỆT ĐỐI KHÔNG chứa mảng `students`, `teachers`, `classes`, `assignments`, `attendance`.
+ */
 export async function createCenter(centerData: Partial<CenterItem>): Promise<string> {
   try {
     await ensureAuthSession('super_admin');
     const centersRef = collection(db, 'centers');
+
+    // Đảm bảo loại bỏ hoàn toàn mọi trường mảng nếu vô tình được truyền vào centerData
+    const {
+      students: _std,
+      teachers: _tch,
+      classes: _cls,
+      assignments: _asg,
+      attendance: _att,
+      ...cleanCenterData
+    } = centerData as any;
+
     const docRef = await addDoc(centersRef, {
-      ...centerData,
-      endDate: centerData.endDate || centerData.expiryDate || '2028-12-31',
-      expiryDate: centerData.expiryDate || centerData.endDate || '2028-12-31',
-      code: centerData.code || `HG0${Date.now().toString().slice(-2)}`,
-      status: centerData.status || 'active',
+      ...cleanCenterData,
+      endDate: cleanCenterData.endDate || cleanCenterData.expiryDate || '2028-12-31',
+      expiryDate: cleanCenterData.expiryDate || cleanCenterData.endDate || '2028-12-31',
+      code: cleanCenterData.code || `HG0${Date.now().toString().slice(-2)}`,
+      status: cleanCenterData.status || 'active',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -401,8 +464,8 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
     await updateDoc(docRef, { id: centerId, centerId: centerId });
 
     // Nếu Super Admin cấp tài khoản Center Admin đi kèm
-    if (centerData.adminUsername && centerData.adminPassword) {
-      const rawUser = centerData.adminUsername.trim();
+    if (cleanCenterData.adminUsername && cleanCenterData.adminPassword) {
+      const rawUser = cleanCenterData.adminUsername.trim();
       const cleanUser = normalizeUsername(rawUser);
 
       // Kiểm tra trước xem doc(db, 'usernames', cleanUser) đã tồn tại chưa
@@ -411,8 +474,8 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
         throw new Error('Tên đăng nhập này đã được sử dụng, vui lòng chọn tên khác');
       }
 
-      const email = cleanUser.includes('@') ? cleanUser : `${cleanUser}@${(centerData.code || centerId).toLowerCase()}.system.local`;
-      const password = centerData.adminPassword.trim() || '123456';
+      const email = cleanUser.includes('@') ? cleanUser : `${cleanUser}@${(cleanCenterData.code || centerId).toLowerCase()}.system.local`;
+      const password = cleanCenterData.adminPassword.trim() || '123456';
       let uid = cleanUser;
 
       try {
@@ -430,17 +493,17 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
         username: cleanUser,
         password: password,
         email: email,
-        phone: centerData.phone || '',
-        address: centerData.address || '',
-        fullName: `Quản trị viên - ${centerData.name}`,
-        name: centerData.name || 'Trung tâm mới',
+        phone: cleanCenterData.phone || '',
+        address: cleanCenterData.address || '',
+        fullName: `Quản trị viên - ${cleanCenterData.name}`,
+        name: cleanCenterData.name || 'Trung tâm mới',
         role: 'center_admin' as const, // BẮT BUỘC LÀ CENTER ADMIN
         centerId: centerId,
-        centerName: centerData.name || '',
-        status: centerData.status || 'active',
-        packagePlan: centerData.packagePlan || 'Premium',
-        endDate: centerData.endDate || centerData.expiryDate || '2028-12-31',
-        expiryDate: centerData.expiryDate || centerData.endDate || '2028-12-31',
+        centerName: cleanCenterData.name || '',
+        status: cleanCenterData.status || 'active',
+        packagePlan: cleanCenterData.packagePlan || 'Premium',
+        endDate: cleanCenterData.endDate || cleanCenterData.expiryDate || '2028-12-31',
+        expiryDate: cleanCenterData.expiryDate || cleanCenterData.endDate || '2028-12-31',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -459,7 +522,7 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
         uid: uid,
         centerId: centerId,
         role: 'center_admin',
-        status: centerData.status || 'active',
+        status: cleanCenterData.status || 'active',
         username: cleanUser,
         email: email,
         createdAt: serverTimestamp(),
@@ -495,10 +558,18 @@ export async function updateCenter(centerId: string, data: Partial<CenterItem>):
   try {
     await ensureAuthSession('super_admin');
     const centerDocRef = doc(db, 'centers', centerId);
+    const {
+      students: _std,
+      teachers: _tch,
+      classes: _cls,
+      assignments: _asg,
+      attendance: _att,
+      ...cleanData
+    } = data as any;
     await updateDoc(centerDocRef, {
-      ...data,
-      ...(data.expiryDate ? { endDate: data.expiryDate } : {}),
-      ...(data.endDate ? { expiryDate: data.endDate } : {}),
+      ...cleanData,
+      ...(cleanData.expiryDate ? { endDate: cleanData.expiryDate } : {}),
+      ...(cleanData.endDate ? { expiryDate: cleanData.endDate } : {}),
       updatedAt: serverTimestamp(),
     });
 
@@ -1812,12 +1883,19 @@ export async function syncTeacherMultipleClassesLink(
   } catch {}
 }
 
-export async function createTeacher(
+/**
+ * Thêm một Giáo viên mới vào Subcollection `/centers/{centerId}/teachers/{teacherId}`
+ * (Chuẩn Firebase Web SDK v9/v10 - Tuyệt đối không ghi mảng `teachers` vào Document trung tâm)
+ */
+export async function addTeacherToCenter(
   centerId: string = DEFAULT_CENTER_ID,
   teacherData: Partial<TeacherItem> & { centerId?: string; password?: string }
-): Promise<any> {
+): Promise<TeacherItem> {
   await ensureAdminAuthSession();
   const targetCenterId = await resolveValidCenterId(teacherData.centerId || centerId);
+
+  // Tự động di trú & dọn dẹp mảng cũ nếu trung tâm còn tồn đọng
+  await migrateLegacyCenterArrays(targetCenterId);
 
   const cleanUsername = teacherData.username?.trim()
     ? normalizeUsername(teacherData.username)
@@ -1879,7 +1957,8 @@ export async function createTeacher(
     status: (teacherData.status as any) || 'active',
   });
 
-  const effectiveTeacherId = createdUser?.uid || teacherData.id || cleanUsername || `teacher_${Date.now()}`;
+  const teachersSubRef = collection(db, 'centers', targetCenterId, 'teachers');
+  const effectiveTeacherId = createdUser?.uid || teacherData.id || doc(teachersSubRef).id;
   const effectiveEmail = createdUser?.email || sanitizeEmail(teacherData.email, cleanUsername, `${targetCenterId.toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`);
 
   const teacherPayload: TeacherItem = {
@@ -1905,45 +1984,23 @@ export async function createTeacher(
     updatedAt: new Date().toISOString(),
   };
 
-  // 3. Lưu trực tiếp vào Center document (teachers array)
-  try {
-    const centerDocRef = doc(db, 'centers', targetCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    let teachersList: TeacherItem[] = [];
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.teachers)) {
-      teachersList = centerSnap.data()?.teachers;
-    }
-    const sanitizedExisting = teachersList
-      .map((t: any) => sanitizeForArray({
-        ...t,
-        createdAt: typeof t?.createdAt === 'string' ? t.createdAt : new Date().toISOString(),
-        updatedAt: typeof t?.updatedAt === 'string' ? t.updatedAt : new Date().toISOString(),
-      }))
-      .filter((t: any) => !areSameTeacher(t, teacherPayload));
+  // 3. Lưu làm một Document độc lập trong Subcollection `/centers/{targetCenterId}/teachers/{effectiveTeacherId}`
+  const teacherDocRef = doc(db, 'centers', targetCenterId, 'teachers', effectiveTeacherId);
+  await setDoc(
+    teacherDocRef,
+    {
+      ...sanitizeForArray(teacherPayload),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 
-    const updatedTeachers = [
-      ...sanitizedExisting,
-      sanitizeForArray(teacherPayload)
-    ];
-    await setDoc(centerDocRef, { teachers: updatedTeachers }, { merge: true });
-
-    try {
-      localStorage.setItem('tt_hocgioi_teachers_' + targetCenterId, JSON.stringify(updatedTeachers));
-    } catch {}
-  } catch (cErr: any) {
-    console.warn('Lưu ý ghi center doc teachers:', cErr.message);
+  if (effectiveTeacherId !== cleanUsername) {
+    await deleteDoc(doc(db, 'centers', targetCenterId, 'teachers', cleanUsername)).catch(() => {});
   }
 
-  // 4. Lưu subcollection centers/{targetCenterId}/teachers/{teacherId}
-  try {
-    const teacherDocRef = doc(db, 'centers', targetCenterId, 'teachers', effectiveTeacherId);
-    await setDoc(teacherDocRef, sanitizeForArray(teacherPayload), { merge: true });
-    if (effectiveTeacherId !== cleanUsername) {
-      await deleteDoc(doc(db, 'centers', targetCenterId, 'teachers', cleanUsername)).catch(() => {});
-    }
-  } catch {}
-
-  // 5. Tạo mối liên kết 2 chiều với TẤT CẢ các lớp học mà giáo viên đảm nhận
+  // 4. Tạo mối liên kết 2 chiều với TẤT CẢ các lớp học mà giáo viên đảm nhận
   if (effectiveClassIds.length > 0) {
     await syncTeacherMultipleClassesLink(
       targetCenterId,
@@ -1955,6 +2012,37 @@ export async function createTeacher(
   }
 
   return teacherPayload;
+}
+
+export async function createTeacher(
+  centerId: string = DEFAULT_CENTER_ID,
+  teacherData: Partial<TeacherItem> & { centerId?: string; password?: string }
+): Promise<TeacherItem> {
+  return addTeacherToCenter(centerId, teacherData);
+}
+
+/**
+ * Truy vấn danh sách Giáo viên từ Subcollection `/centers/{centerId}/teachers`
+ * (Chuẩn Firebase Web SDK v9/v10)
+ */
+export async function getTeachersOfCenter(centerId: string = DEFAULT_CENTER_ID): Promise<TeacherItem[]> {
+  await ensureAuthSession();
+  const validCenterId = await resolveValidCenterId(centerId);
+  if (!validCenterId) return [];
+
+  await migrateLegacyCenterArrays(validCenterId);
+
+  const teachersSubRef = collection(db, 'centers', validCenterId, 'teachers');
+  const snapshot = await getDocs(teachersSubRef);
+
+  const teachersList: TeacherItem[] = [];
+  snapshot.docs.forEach((docSnap) => {
+    const data = docSnap.data();
+    if (data?.status === 'deleted' || data?._deleted) return;
+    teachersList.push(mapDocToTeacherItem(docSnap, validCenterId));
+  });
+
+  return teachersList;
 }
 
 function mapDocToClassItem(docSnap: any, targetCenterId: string): ClassItem {
@@ -2091,11 +2179,10 @@ function mapDocToTeacherItem(docSnapOrData: any, targetCenterId: string): Teache
 export function getRealtimeTeachers(
   centerId: string = DEFAULT_CENTER_ID,
   onUpdate: (teachers: TeacherItem[]) => void,
-  onError?: (error: Error) => void
+  _onError?: (error: Error) => void
 ): Unsubscribe {
   let isCancelled = false;
   let unsubSubcollection: Unsubscribe = () => {};
-  let unsubCenterDoc: Unsubscribe = () => {};
   let unsubSubUsers: Unsubscribe = () => {};
   let unsubRootUsers: Unsubscribe = () => {};
 
@@ -2106,7 +2193,6 @@ export function getRealtimeTeachers(
     }
     if (isCancelled) return;
 
-    let centerDocTeachers: TeacherItem[] = [];
     const subTeachersMap = new Map<string, TeacherItem>();
     const subUsersMap = new Map<string, TeacherItem>();
     const rootUsersMap = new Map<string, TeacherItem>();
@@ -2128,7 +2214,6 @@ export function getRealtimeTeachers(
         if (!item || (!item.id && !item.username)) return;
         if ((item.status as string) === 'deleted' || (item as any)._deleted) return;
 
-        // Tìm xem đã có bản ghi nào trùng khớp với giáo viên này chưa
         let matchedKey: string | null = null;
         for (const [k, existing] of mergedMap.entries()) {
           if (areSameTeacher(existing, item)) {
@@ -2169,8 +2254,7 @@ export function getRealtimeTeachers(
         }
       };
 
-      // Nạp từ Center Document trước, sau đó bổ sung từ subcollections và root users
-      centerDocTeachers.forEach(mergeItem);
+      // Chỉ hợp nhất dữ liệu từ Subcollection `teachers` (và `users`), TUYỆT ĐỐI KHÔNG đọc mảng từ Center Document
       subTeachersMap.forEach(mergeItem);
       subUsersMap.forEach(mergeItem);
       rootUsersMap.forEach(mergeItem);
@@ -2215,14 +2299,25 @@ export function getRealtimeTeachers(
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          centerDocTeachers = parsed.filter((t: TeacherItem) => t && t.id);
-          rebuildAndEmit();
+          onUpdate(parsed.filter((t: TeacherItem) => t && t.id));
         }
       }
     } catch {}
 
-    // 2. LẮNG NGHE SUBCOLLECTION TRỰC TIẾP TỪ FIREBASE: `centers/{targetCenterId}/teachers`
+    // 2. Tự động di trú nếu còn mảng teachers cũ trong Center Document
     if (targetCenterId) {
+      await migrateLegacyCenterArrays(targetCenterId);
+      if (isCancelled) return;
+
+      try {
+        const rawClasses = localStorage.getItem('tt_hocgioi_classes_' + targetCenterId);
+        if (rawClasses) {
+          const parsedClasses = JSON.parse(rawClasses);
+          if (Array.isArray(parsedClasses)) centerClasses = parsedClasses;
+        }
+      } catch {}
+
+      // 3. LẮNG NGHE SUBCOLLECTION TRỰC TIẾP TỪ FIREBASE: `/centers/{targetCenterId}/teachers`
       try {
         const teachersSubRef = collection(db, 'centers', targetCenterId, 'teachers');
         unsubSubcollection = onSnapshot(
@@ -2240,7 +2335,7 @@ export function getRealtimeTeachers(
         );
       } catch {}
 
-      // 3. LẮNG NGHE SUBCOLLECTION USERS CỦA TRUNG TÂM: `centers/{targetCenterId}/users`
+      // 4. LẮNG NGHE SUBCOLLECTION USERS CỦA TRUNG TÂM: `/centers/{targetCenterId}/users`
       try {
         const subUsersRef = collection(db, 'centers', targetCenterId, 'users');
         unsubSubUsers = onSnapshot(
@@ -2260,42 +2355,9 @@ export function getRealtimeTeachers(
           (_err) => {}
         );
       } catch {}
-
-      // 4. LẮNG NGHE CENTER DOCUMENT: `centers/{targetCenterId}` (chỉ cho teachers dự phòng)
-      try {
-        const rawClasses = localStorage.getItem('tt_hocgioi_classes_' + targetCenterId);
-        if (rawClasses) {
-          const parsedClasses = JSON.parse(rawClasses);
-          if (Array.isArray(parsedClasses)) centerClasses = parsedClasses;
-        }
-      } catch {}
-
-      try {
-        const centerDocRef = doc(db, 'centers', targetCenterId);
-        unsubCenterDoc = onSnapshot(
-          centerDocRef,
-          (snapshot) => {
-            if (isCancelled) return;
-            if (snapshot.exists()) {
-              const data = snapshot.data();
-              centerDocTeachers = [];
-              if (Array.isArray(data?.teachers)) {
-                data.teachers.forEach((t: any) => {
-                  if (t && (t.id || t.username)) {
-                    centerDocTeachers.push(mapDocToTeacherItem(t, targetCenterId));
-                  }
-                });
-              }
-
-              rebuildAndEmit();
-            }
-          },
-          () => {}
-        );
-      } catch {}
     }
 
-    // 5. Thử lắng nghe từ `users` collection gốc nếu được cấp quyền
+    // 5. Lắng nghe từ `users` collection gốc nếu được cấp quyền
     try {
       const usersRef = collection(db, 'users');
       const qTeachers = query(usersRef, where('role', '==', 'teacher'));
@@ -2324,7 +2386,6 @@ export function getRealtimeTeachers(
     isCancelled = true;
     unsubSubcollection();
     unsubSubUsers();
-    unsubCenterDoc();
     unsubRootUsers();
   };
 }
@@ -2338,45 +2399,33 @@ export async function updateTeacher(
     await ensureAuthSession();
     const validCenterId = await resolveValidCenterId(centerId);
 
-    // 1. Cập nhật trong Center document (teachers array)
-    try {
-      const centerDocRef = doc(db, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.teachers)) {
-        const updatedTeachers = centerSnap.data()?.teachers.map((t: TeacherItem) => {
-          if (t.id === teacherId) {
-            return { ...t, ...data, updatedAt: new Date().toISOString() };
-          }
-          return t;
-        });
-        await setDoc(centerDocRef, { teachers: updatedTeachers }, { merge: true });
-        try {
-          localStorage.setItem('tt_hocgioi_teachers_' + validCenterId, JSON.stringify(updatedTeachers));
-        } catch {}
-      }
-    } catch {}
+    // 1. Cập nhật trực tiếp Document độc lập trong Subcollection `/centers/{validCenterId}/teachers/{teacherId}`
+    await setDoc(
+      doc(db, 'centers', validCenterId, 'teachers', teacherId),
+      {
+        ...sanitizeForArray(data),
+        centerId: validCenterId,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
 
-    // 2. Cập nhật trực tiếp tài khoản giáo viên tại `users/{teacherId}` nếu có quyền
+    // 2. Cập nhật tài khoản giáo viên tại `/users/{teacherId}` và `/centers/{validCenterId}/users/{teacherId}`
     try {
       await setDoc(doc(db, 'users', teacherId), {
-        ...data,
+        ...sanitizeForArray(data),
         updatedAt: serverTimestamp(),
       }, { merge: true });
     } catch {}
 
-    // 3. Dự phòng subcollections nếu được hỗ trợ
     try {
       await setDoc(doc(db, 'centers', validCenterId, 'users', teacherId), {
-        ...data,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-      await setDoc(doc(db, 'centers', validCenterId, 'teachers', teacherId), {
-        ...data,
+        ...sanitizeForArray(data),
         updatedAt: serverTimestamp(),
       }, { merge: true });
     } catch {}
 
-    // 4. Đồng bộ mối liên kết các lớp học mà giáo viên đảm nhận
+    // 3. Đồng bộ mối liên kết các lớp học mà giáo viên đảm nhận
     const newClassIds: string[] = Array.isArray(data.assignedClassIds)
       ? data.assignedClassIds
       : data.mainClassId !== undefined
@@ -2403,17 +2452,16 @@ export async function deleteTeacher(centerId: string = DEFAULT_CENTER_ID, teache
     const validCenterId = await resolveValidCenterId(centerId);
     let usernameToRelease = '';
 
-    // 0. Giải phóng khỏi /usernames nếu có
+    // 0. Tìm username từ `/centers/{validCenterId}/teachers/{teacherId}` hoặc `/users/{teacherId}` để giải phóng khỏi `/usernames`
     try {
-      const uSnap = await getDoc(doc(db, 'users', teacherId));
-      if (uSnap.exists()) {
-        usernameToRelease = uSnap.data()?.username || '';
+      const tSnap = await getDoc(doc(db, 'centers', validCenterId, 'teachers', teacherId));
+      if (tSnap.exists()) {
+        usernameToRelease = tSnap.data()?.username || '';
       }
       if (!usernameToRelease) {
-        const cSnap = await getDoc(doc(db, 'centers', validCenterId));
-        if (cSnap.exists()) {
-          const t = cSnap.data()?.teachers?.find((x: any) => x.id === teacherId || x.uid === teacherId);
-          if (t?.username) usernameToRelease = t.username;
+        const uSnap = await getDoc(doc(db, 'users', teacherId));
+        if (uSnap.exists()) {
+          usernameToRelease = uSnap.data()?.username || '';
         }
       }
       if (usernameToRelease) {
@@ -2422,37 +2470,21 @@ export async function deleteTeacher(centerId: string = DEFAULT_CENTER_ID, teache
       }
     } catch {}
 
-    // 1. Xóa khỏi Center document (teachers array)
+    // 1. Xóa Document độc lập khỏi Subcollection `/centers/{validCenterId}/teachers/{teacherId}`
     try {
-      const centerDocRef = doc(db, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.teachers)) {
-        const targetTeacherObj = { id: teacherId, uid: teacherId, username: usernameToRelease };
-        const updatedTeachers = centerSnap.data()?.teachers.filter(
-          (t: TeacherItem) => !areSameTeacher(t, targetTeacherObj)
-        );
-        await setDoc(centerDocRef, { teachers: updatedTeachers }, { merge: true });
-        try {
-          localStorage.setItem('tt_hocgioi_teachers_' + validCenterId, JSON.stringify(updatedTeachers));
-        } catch {}
+      await deleteDoc(doc(db, 'centers', validCenterId, 'teachers', teacherId));
+      await deleteDoc(doc(db, 'centers', validCenterId, 'users', teacherId)).catch(() => {});
+      if (usernameToRelease) {
+        await deleteDoc(doc(db, 'centers', validCenterId, 'teachers', usernameToRelease)).catch(() => {});
+        await deleteDoc(doc(db, 'centers', validCenterId, 'users', usernameToRelease)).catch(() => {});
       }
     } catch {}
 
-    // 2. Xóa khỏi root users nếu có quyền
+    // 2. Xóa khỏi root `/users` nếu có quyền
     try {
       await deleteDoc(doc(db, 'users', teacherId));
       if (usernameToRelease) {
         await deleteDoc(doc(db, 'users', usernameToRelease)).catch(() => {});
-      }
-    } catch {}
-
-    // 3. Dự phòng subcollections
-    try {
-      await deleteDoc(doc(db, 'centers', validCenterId, 'users', teacherId));
-      await deleteDoc(doc(db, 'centers', validCenterId, 'teachers', teacherId));
-      if (usernameToRelease) {
-        await deleteDoc(doc(db, 'centers', validCenterId, 'users', usernameToRelease)).catch(() => {});
-        await deleteDoc(doc(db, 'centers', validCenterId, 'teachers', usernameToRelease)).catch(() => {});
       }
     } catch {}
   } catch (error: any) {
@@ -2461,11 +2493,12 @@ export async function deleteTeacher(centerId: string = DEFAULT_CENTER_ID, teache
 }
 
 function mapDocToStudentItem(docSnap: any, targetCenterId: string): StudentItem {
-  const data = docSnap.data();
+  const data = typeof docSnap.data === 'function' ? docSnap.data() : docSnap;
+  const docId = docSnap.id || data.id || `student_${Date.now()}`;
   return {
-    id: docSnap.id,
+    id: docId,
     centerId: data.centerId || targetCenterId,
-    studentCode: data.studentCode || (docSnap.id.startsWith('student-') ? `HS-${docSnap.id.replace('student-', '').toUpperCase()}` : `HS-${docSnap.id.slice(0, 4).toUpperCase()}`),
+    studentCode: data.studentCode || (docId.startsWith('student-') ? `HS-${docId.replace('student-', '').toUpperCase()}` : `HS-${docId.slice(0, 4).toUpperCase()}`),
     name: data.name || data.fullName || 'Học sinh',
     classId: data.classId || '',
     className: data.className || 'Lớp học',
@@ -2489,12 +2522,36 @@ function mapDocToStudentItem(docSnap: any, targetCenterId: string): StudentItem 
   };
 }
 
+/**
+ * Truy vấn danh sách Học sinh từ Subcollection `/centers/{centerId}/students`
+ * (Chuẩn Firebase Web SDK v9/v10)
+ */
+export async function getStudentsOfCenter(centerId: string = DEFAULT_CENTER_ID): Promise<StudentItem[]> {
+  await ensureAuthSession();
+  const validCenterId = await resolveValidCenterId(centerId);
+  if (!validCenterId) return [];
+
+  await migrateLegacyCenterArrays(validCenterId);
+
+  const studentsSubRef = collection(db, 'centers', validCenterId, 'students');
+  const snapshot = await getDocs(studentsSubRef);
+
+  const studentsList: StudentItem[] = [];
+  snapshot.docs.forEach((docSnap) => {
+    const item = mapDocToStudentItem(docSnap, validCenterId);
+    if ((item.status as any) !== 'deleted' && !(item as any)._deleted) {
+      studentsList.push(item);
+    }
+  });
+
+  return studentsList;
+}
+
 export function getRealtimeStudents(
   centerId: string = DEFAULT_CENTER_ID,
   onUpdate: (students: StudentItem[]) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
-  let unsubCenter: Unsubscribe = () => {};
   let unsubSubcollection: Unsubscribe = () => {};
   let isCancelled = false;
 
@@ -2508,106 +2565,76 @@ export function getRealtimeStudents(
       return;
     }
 
-    let centerDocStudents: StudentItem[] = [];
-    const subStudentsMap = new Map<string, StudentItem>();
-
-    const emitCurrentStudents = () => {
-      if (isCancelled) return;
-      const mergedMap = new Map<string, StudentItem>();
-      centerDocStudents.forEach((s) => {
-        if (s && s.id && (s.status as any) !== 'deleted' && !(s as any)._deleted) {
-          mergedMap.set(s.id, s);
-        }
-      });
-      subStudentsMap.forEach((s) => {
-        if (s && s.id && (s.status as any) !== 'deleted' && !(s as any)._deleted) {
-          mergedMap.set(s.id, { ...mergedMap.get(s.id), ...s });
-        }
-      });
-      const list = Array.from(mergedMap.values());
-      onUpdate(list);
-      try {
-        localStorage.setItem('tt_hocgioi_students_' + targetCenterId, JSON.stringify(list));
-      } catch {}
-    };
-
     // 1. Kiểm tra cache localStorage tức thì
     try {
       const raw = localStorage.getItem('tt_hocgioi_students_' + targetCenterId);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          centerDocStudents = parsed.filter((s: StudentItem) => s && s.id && (s.status as any) !== 'deleted');
-          emitCurrentStudents();
+          onUpdate(parsed.filter((s: StudentItem) => s && s.id && (s.status as any) !== 'deleted'));
         }
       }
     } catch {}
 
-    // 2. Lắng nghe realtime từ Sub-collection: `centers/{targetCenterId}/students`
+    // 2. Tự động di trú nếu còn mảng students cũ trong Center Document
+    await migrateLegacyCenterArrays(targetCenterId);
+    if (isCancelled) return;
+
+    // 3. Lắng nghe realtime ĐỘC QUYỀN từ Subcollection: `/centers/{targetCenterId}/students`
     try {
       const subRef = collection(db, 'centers', targetCenterId, 'students');
       unsubSubcollection = onSnapshot(
         subRef,
         (snapshot) => {
           if (isCancelled) return;
-          subStudentsMap.clear();
+          const list: StudentItem[] = [];
           snapshot.docs.forEach((docSnap) => {
             const item = mapDocToStudentItem(docSnap, targetCenterId);
             if ((item.status as any) !== 'deleted' && !(item as any)._deleted) {
-              subStudentsMap.set(item.id, item);
+              list.push(item);
             }
           });
-          emitCurrentStudents();
+          onUpdate(list);
+          try {
+            localStorage.setItem('tt_hocgioi_students_' + targetCenterId, JSON.stringify(list));
+          } catch {}
         },
-        () => {}
+        (err) => {
+          if (onError) onError(err);
+        }
       );
     } catch {}
-
-    // 3. Lắng nghe realtime trên Center Document: `centers/{targetCenterId}` (mảng students)
-    const centerDocRef = doc(db, 'centers', targetCenterId);
-    unsubCenter = onSnapshot(
-      centerDocRef,
-      (snapshot) => {
-        if (isCancelled) return;
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          centerDocStudents = [];
-          if (Array.isArray(data?.students)) {
-            data.students.forEach((s: any) => {
-              if (s && (s.id || s.studentCode || s.name) && (s.status as any) !== 'deleted' && !s._deleted) {
-                const sId = s.id || `std_${s.studentCode || Math.random()}`;
-                const item = mapDocToStudentItem({ id: sId, data: () => s }, targetCenterId);
-                centerDocStudents.push(item);
-              }
-            });
-          }
-          emitCurrentStudents();
-        }
-      },
-      (err) => {
-        if (onError) onError(err);
-      }
-    );
   };
 
   startListener();
 
   return () => {
     isCancelled = true;
-    unsubCenter();
     unsubSubcollection();
   };
 }
 
-export async function createStudent(
+/**
+ * Thêm một Học sinh mới thành một Document độc lập vào Subcollection `/centers/{centerId}/students/{studentId}`
+ * (Chuẩn Firebase Web SDK v9/v10 - Tuyệt đối không ghi mảng `students` vào Document trung tâm)
+ */
+export async function addStudentToCenter(
   centerId: string = DEFAULT_CENTER_ID,
   studentData: Partial<StudentItem> & { username?: string; password?: string; parentEmail?: string }
 ): Promise<string> {
   try {
     await ensureAuthSession();
     const validCenterId = await resolveValidCenterId(centerId);
-    
-    const studentDocId = studentData.id || `student_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    // Tự động di trú & xóa trường mảng cũ nếu còn tồn đọng
+    await migrateLegacyCenterArrays(validCenterId);
+
+    const studentsSubRef = collection(db, 'centers', validCenterId, 'students');
+    const studentDocRef = studentData.id
+      ? doc(db, 'centers', validCenterId, 'students', studentData.id)
+      : doc(studentsSubRef);
+    const studentDocId = studentDocRef.id;
+
     const studentCode = studentData.studentCode || `HS-${Date.now().toString().slice(-4)}`;
     const gpaNum = Number(studentData.gpa);
     const validGpa = Number.isFinite(gpaNum) ? gpaNum : 8.0;
@@ -2638,26 +2665,22 @@ export async function createStudent(
       updatedAt: new Date().toISOString(),
     };
 
-    // 1. Lưu trực tiếp vào Center document
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    let studentsList: StudentItem[] = [];
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.students)) {
-      studentsList = centerSnap.data()?.students;
-    }
-    const updatedStudents = [...studentsList.filter(s => s.id !== studentDocId), sanitizedStudent];
-    await setDoc(centerDocRef, { students: updatedStudents }, { merge: true });
+    // 1. Lưu trực tiếp làm Document độc lập trong Subcollection `/centers/{validCenterId}/students/{studentDocId}`
+    await setDoc(
+      studentDocRef,
+      {
+        ...sanitizeForArray(sanitizedStudent),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
 
-    // 2. Cập nhật cache localStorage
-    try {
-      localStorage.setItem('tt_hocgioi_students_' + validCenterId, JSON.stringify(updatedStudents));
-    } catch {}
-
-    // 3. Tạo tự động tài khoản phụ huynh trên Firebase users nếu có thông tin phụ huynh
+    // 2. Tạo tự động tài khoản phụ huynh trên Firebase users nếu có thông tin phụ huynh
     if (sanitizedStudent.parentName || sanitizedStudent.parentPhone || sanitizedStudent.username) {
       const cleanPhone = sanitizedStudent.parentPhone ? sanitizedStudent.parentPhone.replace(/[^0-9]/g, '') : '';
-      const rawUser = sanitizedStudent.username?.trim() 
-        ? sanitizedStudent.username 
+      const rawUser = sanitizedStudent.username?.trim()
+        ? sanitizedStudent.username
         : cleanPhone ? `ph_${cleanPhone}` : `ph_${studentDocId.slice(-6)}`;
       const cleanUser = normalizeUsername(rawUser);
 
@@ -2675,15 +2698,17 @@ export async function createStudent(
       }).catch(() => {});
     }
 
-    // 4. Dự phòng subcollection nếu được phân quyền
-    try {
-      await setDoc(doc(db, 'centers', validCenterId, 'students', studentDocId), sanitizedStudent, { merge: true });
-    } catch {}
-
     return studentDocId;
   } catch (error: any) {
     throw new Error(`Không thể thêm học sinh: ${error.message}`);
   }
+}
+
+export async function createStudent(
+  centerId: string = DEFAULT_CENTER_ID,
+  studentData: Partial<StudentItem> & { username?: string; password?: string; parentEmail?: string }
+): Promise<string> {
+  return addStudentToCenter(centerId, studentData);
 }
 
 export async function updateStudent(
@@ -2694,24 +2719,16 @@ export async function updateStudent(
   try {
     await ensureAuthSession();
     const validCenterId = await resolveValidCenterId(centerId);
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.students)) {
-      const updatedStudents = centerSnap.data()?.students.map((s: StudentItem) => {
-        if (s.id === studentId) {
-          return { ...s, ...data, updatedAt: new Date().toISOString() };
-        }
-        return s;
-      });
-      await setDoc(centerDocRef, { students: updatedStudents }, { merge: true });
-      try {
-        localStorage.setItem('tt_hocgioi_students_' + validCenterId, JSON.stringify(updatedStudents));
-      } catch {}
-    }
-
-    try {
-      await setDoc(doc(db, 'centers', validCenterId, 'students', studentId), data, { merge: true });
-    } catch {}
+    const studentDocRef = doc(db, 'centers', validCenterId, 'students', studentId);
+    await setDoc(
+      studentDocRef,
+      {
+        ...sanitizeForArray(data),
+        centerId: validCenterId,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   } catch (error: any) {
     throw new Error(`Không thể cập nhật học sinh: ${error.message}`);
   }
@@ -2723,17 +2740,16 @@ export async function deleteStudent(centerId: string = DEFAULT_CENTER_ID, studen
     const validCenterId = await resolveValidCenterId(centerId);
     let usernameToRelease = '';
 
-    // 0. Giải phóng khỏi /usernames và /users nếu có
+    // 0. Tìm username từ `/centers/{validCenterId}/students/{studentId}` hoặc `/users/{studentId}` để giải phóng khỏi `/usernames`
     try {
-      const uSnap = await getDoc(doc(db, 'users', studentId));
-      if (uSnap.exists()) {
-        usernameToRelease = uSnap.data()?.username || '';
+      const sSnap = await getDoc(doc(db, 'centers', validCenterId, 'students', studentId));
+      if (sSnap.exists()) {
+        usernameToRelease = sSnap.data()?.username || '';
       }
       if (!usernameToRelease) {
-        const cSnap = await getDoc(doc(db, 'centers', validCenterId));
-        if (cSnap.exists()) {
-          const s = cSnap.data()?.students?.find((x: any) => x.id === studentId || x.uid === studentId);
-          if (s?.username) usernameToRelease = s.username;
+        const uSnap = await getDoc(doc(db, 'users', studentId));
+        if (uSnap.exists()) {
+          usernameToRelease = uSnap.data()?.username || '';
         }
       }
       if (usernameToRelease) {
@@ -2746,20 +2762,11 @@ export async function deleteStudent(centerId: string = DEFAULT_CENTER_ID, studen
       await deleteDoc(doc(db, 'users', studentId));
     } catch {}
 
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.students)) {
-      const updatedStudents = centerSnap.data()?.students.filter((s: StudentItem) => s.id !== studentId);
-      await setDoc(centerDocRef, { students: updatedStudents }, { merge: true });
-      try {
-        localStorage.setItem('tt_hocgioi_students_' + validCenterId, JSON.stringify(updatedStudents));
-      } catch {}
-    }
-
+    // 1. Xóa Document độc lập khỏi Subcollection `/centers/{validCenterId}/students/{studentId}`
     try {
       await deleteDoc(doc(db, 'centers', validCenterId, 'students', studentId));
-      await deleteDoc(doc(db, 'centers', validCenterId, 'parents', studentId));
-      await deleteDoc(doc(db, 'centers', validCenterId, 'users', studentId));
+      await deleteDoc(doc(db, 'centers', validCenterId, 'parents', studentId)).catch(() => {});
+      await deleteDoc(doc(db, 'centers', validCenterId, 'users', studentId)).catch(() => {});
       if (usernameToRelease) {
         await deleteDoc(doc(db, 'centers', validCenterId, 'users', usernameToRelease)).catch(() => {});
         await deleteDoc(doc(db, 'centers', validCenterId, 'parents', usernameToRelease)).catch(() => {});
@@ -3095,9 +3102,11 @@ async function getPrivilegedDbForCenter(centerId: string, teacherIdHint?: string
     .replace(/[^a-z0-9]/g, '');
   const candidateCreds: Array<{ email: string; pass: string; role: string }> = [];
 
-  // 1. Ưu tiên thông tin Giáo viên phụ trách lớp / bài tập trong trung tâm
-  if (Array.isArray(centerData.teachers)) {
-    const sortedTeachers = [...centerData.teachers].sort((a, b) =>
+  // 1. Ưu tiên thông tin Giáo viên phụ trách lớp / bài tập từ Subcollection `/centers/{validCenterId}/teachers`
+  try {
+    const teachersSubSnap = await getDocs(collection(db, 'centers', validCenterId, 'teachers'));
+    const subTeachers = teachersSubSnap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+    const sortedTeachers = subTeachers.sort((a, b) =>
       a?.id === teacherIdHint ? -1 : b?.id === teacherIdHint ? 1 : 0
     );
     for (const t of sortedTeachers) {
@@ -3121,7 +3130,7 @@ async function getPrivilegedDbForCenter(centerId: string, teacherIdHint?: string
         candidateCreds.push({ email: tEmail, pass: '123123456', role: 'teacher' });
       }
     }
-  }
+  } catch {}
 
   // 2. Tài khoản Quản trị viên trung tâm
   const adminU = String(centerData.adminUsername || '')

@@ -615,16 +615,20 @@ export async function loginUser(
             break;
           }
 
-          // Kiểm tra Giáo viên
-          if (Array.isArray(cData.teachers)) {
-            const t = cData.teachers.find(
-              (tch: any) =>
+          // Kiểm tra Giáo viên trong Subcollection `/centers/{cId}/teachers`
+          try {
+            const teachersSnap = await getDocs(collection(db, 'centers', cId, 'teachers'));
+            const tDoc = teachersSnap.docs.find((d) => {
+              const tch = d.data();
+              return (
                 (tch.username && tch.username.toLowerCase().replace(/^@+/, '').trim() === cleanUsername) ||
                 (tch.teacherCode && tch.teacherCode.toLowerCase().trim() === cleanUsername) ||
                 (tch.phone && tch.phone.replace(/[^0-9]/g, '') === cleanUsername.replace(/[^0-9]/g, '')) ||
                 (tch.name && normalizeUsername(tch.name).toLowerCase() === cleanUsername)
-            );
-            if (t) {
+              );
+            });
+            if (tDoc) {
+              const t: any = { id: tDoc.id, ...tDoc.data() };
               emailToAuth = t.email && t.email.includes('@') && !t.email.endsWith('.local') && !t.email.includes('.system.')
                 ? t.email.toLowerCase().trim()
                 : `${cleanUsername}@${(cData.code || cId).toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`;
@@ -645,17 +649,21 @@ export async function loginUser(
               } catch {}
               break;
             }
-          }
+          } catch {}
 
-          // Kiểm tra Học sinh / Phụ huynh
-          if (Array.isArray(cData.students)) {
-            const s = cData.students.find(
-              (std: any) =>
+          // Kiểm tra Học sinh / Phụ huynh trong Subcollection `/centers/{cId}/students`
+          try {
+            const studentsSnap = await getDocs(collection(db, 'centers', cId, 'students'));
+            const sDoc = studentsSnap.docs.find((d) => {
+              const std = d.data();
+              return (
                 (std.username && std.username.toLowerCase().replace(/^@+/, '').trim() === cleanUsername) ||
                 (std.studentCode && std.studentCode.toLowerCase().trim() === cleanUsername) ||
                 (std.parentPhone && std.parentPhone.replace(/[^0-9]/g, '') === cleanUsername.replace(/[^0-9]/g, ''))
-            );
-            if (s) {
+              );
+            });
+            if (sDoc) {
+              const s: any = { id: sDoc.id, ...sDoc.data() };
               emailToAuth = s.parentEmail && s.parentEmail.includes('@') && !s.parentEmail.endsWith('.local')
                 ? s.parentEmail.toLowerCase().trim()
                 : `${cleanUsername}@${(cData.code || cId).toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`;
@@ -676,7 +684,7 @@ export async function loginUser(
               } catch {}
               break;
             }
-          }
+          } catch {}
         }
       } catch (cErr) {
         console.warn('Lỗi kiểm tra centers fallback:', cErr);
@@ -817,24 +825,11 @@ export async function loginUser(
       }
     } catch {}
 
-    // Bổ sung dữ liệu trung tâm nếu cần
+    // Bổ sung tên trung tâm từ Center Document nếu cần
     try {
       const centerSnap = await getDoc(doc(db, 'centers', centerId));
       if (centerSnap.exists()) {
         const cData = centerSnap.data();
-        if (role === 'teacher' && Array.isArray(cData.teachers)) {
-          const t = cData.teachers.find((x: any) =>
-            x.id === finalUid ||
-            (x.username && x.username.toLowerCase().replace(/^@+/, '') === username.toLowerCase().replace(/^@+/, ''))
-          );
-          if (t) detailData = { ...t, ...detailData };
-        } else if (role === 'parent' && Array.isArray(cData.students)) {
-          const s = cData.students.find((x: any) =>
-            x.id === finalUid ||
-            (x.username && x.username.toLowerCase().replace(/^@+/, '') === username.toLowerCase().replace(/^@+/, ''))
-          );
-          if (s) detailData = { ...s, ...detailData };
-        }
         detailData.centerName = detailData.centerName || cData.name;
       }
     } catch {}
@@ -1121,47 +1116,6 @@ export async function createUserAccount(
     await deleteDoc(doc(db, 'users', cleanUsername)).catch(() => {});
   }
 
-  // Nếu là giáo viên, cũng cập nhật mảng teachers của Center document để đồng bộ tức thời
-  if (rawRole === 'teacher') {
-    try {
-      const cRef = doc(db, 'centers', targetCenterId);
-      const cSnap = await getDoc(cRef);
-      if (cSnap.exists()) {
-        const cData = cSnap.data();
-        const existingTeachers = Array.isArray(cData.teachers) ? cData.teachers : [];
-        const sanitizedExisting = existingTeachers
-          .map((t: any) => {
-            const existingName = t?.name && !['giáo viên', 'giao vien', 'người dùng', 'user'].includes(String(t.name).trim().toLowerCase())
-              ? String(t.name).trim()
-              : (t?.fullName && !['giáo viên', 'giao vien', 'người dùng', 'user'].includes(String(t.fullName).trim().toLowerCase()) ? String(t.fullName).trim() : '');
-            const validTName = existingName || getValidTeacherName(t?.fullName, t?.name, t?.displayName) || t?.name || t?.fullName || 'Giáo viên';
-            return sanitizeForArray({
-              ...t,
-              name: validTName,
-              fullName: validTName,
-              createdAt: typeof t?.createdAt === 'string' ? t.createdAt : new Date().toISOString(),
-              updatedAt: typeof t?.updatedAt === 'string' ? t.updatedAt : new Date().toISOString(),
-            });
-          })
-          .filter((t: any) => !areSameAccount(t, tenantDetailPayload));
-
-        const teacherArrayPayload = sanitizeForArray({
-          ...tenantDetailPayload,
-          name: displayName,
-          fullName: displayName,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-        const updatedTeachers = [...sanitizedExisting, teacherArrayPayload];
-        await setDoc(cRef, { teachers: updatedTeachers }, { merge: true });
-
-        try {
-          localStorage.setItem('tt_hocgioi_teachers_' + targetCenterId, JSON.stringify(updatedTeachers));
-        } catch {}
-      }
-    } catch {}
-  }
-
   const createdAccount: UserAccount = {
     ...tenantDetailPayload,
     id: newUid,
@@ -1266,24 +1220,6 @@ export async function deleteUserAccount(
         await deleteDoc(doc(db, 'centers', targetCenterId, 'students', usernameToClean)).catch(() => {});
         await deleteDoc(doc(db, 'centers', targetCenterId, 'parents', usernameToClean)).catch(() => {});
       }
-
-      // Làm sạch mảng teachers và students trong Center doc để không còn lưu tài khoản này
-      const cRef = doc(db, 'centers', targetCenterId);
-      const cSnap = await getDoc(cRef);
-      if (cSnap.exists()) {
-        const cData = cSnap.data();
-        const targetObj = { id: uid, uid: uid, username: usernameToClean };
-        const updates: any = {};
-        if (Array.isArray(cData.teachers)) {
-          updates.teachers = cData.teachers.filter((t: any) => !areSameAccount(t, targetObj));
-        }
-        if (Array.isArray(cData.students)) {
-          updates.students = cData.students.filter((s: any) => !areSameAccount(s, targetObj));
-        }
-        if (Object.keys(updates).length > 0) {
-          await setDoc(cRef, updates, { merge: true });
-        }
-      }
     } catch {}
   }
 }
@@ -1380,7 +1316,7 @@ export function listenToCenterUsers(
     callback(uniqueList);
   };
 
-  // Hàm trích xuất danh sách tài khoản từ Center doc (Admin, GV, HS/Phụ huynh)
+  // Hàm trích xuất tài khoản Quản trị viên (Center Admin) từ Center doc
   const extractFromCenter = (cData: any, cId: string): UserAccount[] => {
     if (!cData) return [];
     const list: UserAccount[] = [];
@@ -1400,57 +1336,6 @@ export function listenToCenterUsers(
         email: cData.email || '',
         phone: cData.phone || '',
         status: cData.status === 'suspended' ? 'locked' : 'active',
-      });
-    }
-
-    // Tài khoản Giáo viên
-    if (Array.isArray(cData.teachers)) {
-      cData.teachers.forEach((t: any) => {
-        if (!t || !t.id) return;
-        const teacherName = getValidTeacherName(t.fullName, t.name, t.displayName) || t.name || t.fullName || 'Giáo viên';
-        list.push({
-          id: t.id,
-          uid: t.id,
-          username: t.username || `gv_${t.id}`,
-          password: t.password || '123',
-          role: 'teacher',
-          centerId: cId,
-          centerName: cData.name || '',
-          name: teacherName,
-          fullName: teacherName,
-          email: t.email || '',
-          phone: t.phone || '',
-          avatar: t.avatar || '',
-          status: t.status || 'active',
-          teacherCode: t.teacherCode,
-          subject: t.subject,
-          mainClassId: t.mainClassId,
-          mainClassName: t.mainClassName,
-        });
-      });
-    }
-
-    // Tài khoản Phụ huynh / Học sinh
-    if (Array.isArray(cData.students)) {
-      cData.students.forEach((s: any) => {
-        if (!s || !s.id) return;
-        list.push({
-          id: s.id,
-          uid: s.id,
-          username: s.username || `ph_${s.studentCode || s.id}`,
-          password: s.password || '123',
-          role: 'parent',
-          centerId: cId,
-          centerName: cData.name || '',
-          name: s.parentName || `Phụ huynh em ${s.name}`,
-          fullName: s.parentName || `Phụ huynh em ${s.name}`,
-          email: s.parentEmail || '',
-          phone: s.parentPhone || '',
-          status: s.status || 'active',
-          studentId: s.id,
-          studentCode: s.studentCode,
-          studentName: s.name,
-        });
       });
     }
 

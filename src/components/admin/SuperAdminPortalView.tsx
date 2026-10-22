@@ -38,7 +38,8 @@ import {
   deleteCenterAdminAccount,
   toggleAccountLock,
   createSystemUser,
-  normalizeUsername
+  normalizeUsername,
+  migrateLegacyCenterArrays
 } from '../../services/firebaseService';
 import { 
   UserAccount, 
@@ -84,10 +85,30 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
     const unsubscribeCenters = onSnapshot(
       centersRef,
       (snapshot) => {
-        const list = snapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...docSnap.data(),
-        }));
+        const list = snapshot.docs.map((docSnap) => {
+          const rawData = docSnap.data() as any;
+          if (
+            Array.isArray(rawData?.students) ||
+            Array.isArray(rawData?.teachers) ||
+            Array.isArray(rawData?.classes) ||
+            Array.isArray(rawData?.assignments) ||
+            Array.isArray(rawData?.attendance)
+          ) {
+            migrateLegacyCenterArrays(docSnap.id).catch(() => {});
+          }
+          const {
+            students: _std,
+            teachers: _tch,
+            classes: _cls,
+            assignments: _asg,
+            attendance: _att,
+            ...cleanData
+          } = rawData;
+          return {
+            id: docSnap.id,
+            ...cleanData,
+          };
+        });
         setCenters(list);
         setIsLoadingCenters(false);
       },

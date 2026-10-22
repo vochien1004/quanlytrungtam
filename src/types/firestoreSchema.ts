@@ -25,12 +25,15 @@ export type AssignmentStatus = 'working' | 'completed' | 'grading' | 'graded';
 export type SubmissionStatus = 'submitted' | 'graded';
 export type AttachmentFileType = 'pdf' | 'word' | 'image' | 'other';
 
+export type TeacherStatus = 'active' | 'paused' | 'inactive';
+export type StudentStatus = 'active' | 'probation' | 'suspended';
+
 /**
  * 1. COLLECTION GỐC: `/centers/{centerId}`
  * Chỉ lưu trữ thông tin định danh, liên hệ và bản quyền SaaS của Trung tâm (~1KB).
- * TUYỆT ĐỐI KHÔNG chứa các mảng `classes`, `assignments`, `attendance`.
+ * TUYỆT ĐỐI KHÔNG chứa các trường mảng `students`, `teachers`, `classes`, `assignments`, `attendance`.
  */
-export interface CenterDocument {
+export interface Center {
   id: string;
   centerId: string;
   code: string;
@@ -48,6 +51,67 @@ export interface CenterDocument {
   createdAt?: FirestoreTimestamp;
   updatedAt?: FirestoreTimestamp;
 }
+
+export type CenterDocument = Center;
+
+/**
+ * 1A. SUBCOLLECTION HỌC SINH: `/centers/{centerId}/students/{studentId}`
+ * Lưu trữ từng học sinh thành một Document độc lập bên trong subcollection `students`.
+ */
+export interface Student {
+  id: string;
+  centerId: string;       // Tham chiếu về Trung tâm trực thuộc
+  studentCode: string;    // Mã định danh học sinh (VD: "HS-01", "HS-102")
+  name: string;           // Họ và tên học sinh
+  classId: string;        // ID lớp học đang theo học
+  className: string;      // Tên lớp học
+  avatar: string;
+  attendanceStatus: AttendanceStatus;
+  note: string;
+  parentName: string;     // Họ tên Phụ huynh
+  parentPhone: string;    // Số điện thoại Phụ huynh
+  parentEmail?: string;
+  username?: string;      // Tài khoản sổ liên lạc
+  password?: string;
+  gender?: 'Nam' | 'Nữ';
+  dob?: string;           // Ngày sinh
+  gpa: number;            // Điểm trung bình tích lũy
+  recentGrade: string;
+  status: StudentStatus;
+  createdAt?: FirestoreTimestamp;
+  updatedAt?: FirestoreTimestamp;
+}
+
+export type StudentDocument = Student;
+
+/**
+ * 1B. SUBCOLLECTION GIÁO VIÊN: `/centers/{centerId}/teachers/{teacherId}`
+ * Lưu trữ từng giáo viên thành một Document độc lập bên trong subcollection `teachers`.
+ */
+export interface Teacher {
+  id: string;
+  centerId: string;       // Tham chiếu về Trung tâm trực thuộc
+  teacherCode: string;    // Mã giáo viên (VD: "GV-01", "GV-TOAN")
+  name: string;           // Họ và tên giáo viên
+  fullName?: string;
+  username?: string;      // Tên đăng nhập hệ thống
+  password?: string;
+  subject: string;        // Môn giảng dạy chính
+  avatar: string;
+  phone: string;          // Số điện thoại liên hệ
+  email: string;          // Email công việc
+  mainClassId: string;    // ID lớp chủ nhiệm / phụ trách chính
+  mainClassName: string;  // Tên lớp phụ trách chính
+  assignedClassIds?: string[];   // Danh sách ID các lớp đảm nhận
+  assignedClassNames?: string[]; // Danh sách tên các lớp đảm nhận
+  assignedSubjects?: string[];   // Danh sách môn học phụ trách
+  bio: string;            // Tiểu sử / Kinh nghiệm chuyên môn
+  status: TeacherStatus;
+  createdAt?: FirestoreTimestamp;
+  updatedAt?: FirestoreTimestamp;
+}
+
+export type TeacherDocument = Teacher;
 
 /**
  * 2. SUBCOLLECTION LỚP HỌC: `/centers/{centerId}/classes/{classId}`
