@@ -110,7 +110,9 @@ import {
   BookMarked,
   Award,
   Bell,
-  HeartHandshake
+  HeartHandshake,
+  CalendarCheck,
+  MessageSquare
 } from 'lucide-react';
 
 export default function App() {
@@ -127,7 +129,7 @@ export default function App() {
     const stored = getStoredSession();
     if (stored?.role === 'super_admin') return 'super-admin-portal';
     if (isTeacherRole(stored?.role)) return 'teacher-attendance';
-    if (isParentRole(stored?.role)) return 'parent-portal';
+    if (isParentRole(stored?.role)) return 'parent-attendance';
     return 'dashboard';
   });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
@@ -341,7 +343,7 @@ export default function App() {
     } else if (role === 'teacher') {
       setActiveNav('teacher-attendance');
     } else {
-      setActiveNav('parent-portal');
+      setActiveNav('parent-attendance');
     }
 
     try {
@@ -933,11 +935,16 @@ export default function App() {
       const isTeacher = !isParent && (isTeacherRole(currentUser?.role) || (!currentUser?.role && isTeacherRole(currentRole)) || (currentRole === 'teacher' && currentUser?.role !== 'center_admin'));
       const isCenterAdmin = currentUser?.role === 'center_admin' || (!isTeacher && !isParent);
       if (activeNav === 'super-admin-portal') {
-        setActiveNav(isParent ? 'parent-portal' : isTeacher ? 'teacher-attendance' : 'dashboard');
+        setActiveNav(isParent ? 'parent-attendance' : isTeacher ? 'teacher-attendance' : 'dashboard');
       } else if (isParent) {
-        // Phụ huynh đăng nhập: chỉ hiển thị menu Phụ huynh (Sổ liên lạc), chuyển hướng tất cả các mục khác về 'parent-portal'
-        if (activeNav !== 'parent-portal') {
-          setActiveNav('parent-portal');
+        // Phụ huynh đăng nhập: chỉ cho phép các menu con: Điểm danh, Bài tập, Nhận xét
+        if (
+          activeNav !== 'parent-attendance' &&
+          activeNav !== 'parent-homework' &&
+          activeNav !== 'parent-remarks' &&
+          activeNav !== 'parent-portal'
+        ) {
+          setActiveNav('parent-attendance');
         }
       } else if (isTeacher) {
         if (
@@ -948,12 +955,11 @@ export default function App() {
           setActiveNav('teacher-attendance');
         }
       } else if (isCenterAdmin) {
-        // Center admin chỉ quản lý Quản trị trung tâm, Báo cáo & Cài đặt, ẩn menu Giáo viên và Phụ huynh
+        // Center admin chỉ ẩn menu làm việc của Giáo viên
         if (
           activeNav === 'teacher-attendance' ||
           activeNav === 'teacher-assignments' ||
-          activeNav === 'teacher-grading' ||
-          activeNav === 'parent-portal'
+          activeNav === 'teacher-grading'
         ) {
           setActiveNav('dashboard');
         }
@@ -981,7 +987,7 @@ export default function App() {
           } else if (isTeacher) {
             setActiveNav('teacher-attendance');
           } else if (isParent) {
-            setActiveNav('parent-portal');
+            setActiveNav('parent-attendance');
           } else {
             setActiveNav('dashboard');
           }
@@ -1159,6 +1165,19 @@ export default function App() {
               classes={classes}
               teachers={teachers}
               activeCenterId={activeCenterId || currentUser?.centerId}
+              attendanceRecords={attendanceRecords}
+              activeTab={
+                activeNav === 'parent-homework'
+                  ? 'homework'
+                  : activeNav === 'parent-remarks'
+                  ? 'remarks'
+                  : 'attendance'
+              }
+              onTabChange={(tab) => {
+                if (tab === 'attendance') setActiveNav('parent-attendance');
+                else if (tab === 'homework') setActiveNav('parent-homework');
+                else if (tab === 'remarks') setActiveNav('parent-remarks');
+              }}
               onRequestLeaveSuccess={async (studentName, date, reason) => {
                 const target = students.find((s) => s.name === studentName);
                 if (target) {
@@ -1306,13 +1325,30 @@ export default function App() {
               )}
 
               {/* PARENT PORTAL VIEW */}
-              {activeNav === 'parent-portal' && (
+              {(activeNav === 'parent-portal' ||
+                activeNav === 'parent-attendance' ||
+                activeNav === 'parent-homework' ||
+                activeNav === 'parent-remarks') && (
                 <ParentPortalView
                   student={bachDuongStudent}
                   assignments={assignments}
                   allStudents={students}
                   classes={classes}
                   teachers={teachers}
+                  activeCenterId={activeCenterId}
+                  attendanceRecords={attendanceRecords}
+                  activeTab={
+                    activeNav === 'parent-homework'
+                      ? 'homework'
+                      : activeNav === 'parent-remarks'
+                      ? 'remarks'
+                      : 'attendance'
+                  }
+                  onTabChange={(tab) => {
+                    if (tab === 'attendance') setActiveNav('parent-attendance');
+                    else if (tab === 'homework') setActiveNav('parent-homework');
+                    else if (tab === 'remarks') setActiveNav('parent-remarks');
+                  }}
                   onRequestLeaveSuccess={async (studentName, date, reason) => {
                     const target = students.find((s) => s.name === studentName);
                     if (target) {
@@ -1463,21 +1499,33 @@ export default function App() {
             <>
               <button
                 type="button"
-                onClick={() => setActiveNav('parent-portal')}
+                onClick={() => setActiveNav('parent-attendance')}
                 className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
-                  activeNav === 'parent-portal' ? 'text-[#0072B5] font-black' : 'text-slate-500 font-semibold'
+                  activeNav === 'parent-attendance' || activeNav === 'parent-portal' ? 'text-[#00A86B] font-black' : 'text-slate-500 font-semibold'
                 }`}
               >
-                <HeartHandshake className="w-5 h-5 mb-0.5" />
-                <span className="text-[10px]">Sổ liên lạc</span>
+                <CalendarCheck className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Điểm danh</span>
               </button>
               <button
                 type="button"
-                onClick={() => setIsNotificationModalOpen(true)}
-                className="flex flex-col items-center justify-center flex-1 py-1 text-slate-500 font-semibold rounded-xl transition-all cursor-pointer"
+                onClick={() => setActiveNav('parent-homework')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'parent-homework' ? 'text-[#F39C12] font-black' : 'text-slate-500 font-semibold'
+                }`}
               >
-                <Bell className="w-5 h-5 mb-0.5" />
-                <span className="text-[10px]">Thông báo</span>
+                <Award className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Bài tập</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNav('parent-remarks')}
+                className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+                  activeNav === 'parent-remarks' ? 'text-[#0072B5] font-black' : 'text-slate-500 font-semibold'
+                }`}
+              >
+                <MessageSquare className="w-5 h-5 mb-0.5" />
+                <span className="text-[10px]">Nhận xét</span>
               </button>
               <button
                 type="button"

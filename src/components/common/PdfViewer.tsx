@@ -11,6 +11,7 @@ import {
   FileText,
   Printer
 } from 'lucide-react';
+import { getProxiedFileUrl } from '../../utils/fileProxy';
 
 // Cấu hình workerSrc an toàn không gây nghẽn luồng UI chính
 if (typeof window !== 'undefined' && (pdfjsLib as any)?.GlobalWorkerOptions) {
@@ -19,30 +20,8 @@ if (typeof window !== 'undefined' && (pdfjsLib as any)?.GlobalWorkerOptions) {
   } catch {}
 }
 
-// Bộ nhớ đệm nhị phân PDF trong phiên làm việc & localStorage (cho tệp PDF nhỏ) để hiển thị tức thì không cần fetch CORS
-const memoryPdfCache = new Map<string, Uint8Array>();
-
-export function cachePdfBinary(key: string | null | undefined, data: ArrayBuffer | Uint8Array | null | undefined): void {
-  if (!key || !data || data.byteLength === 0) return;
-  try {
-    const cleanKey = key.trim();
-    const copy =
-      data instanceof ArrayBuffer
-        ? new Uint8Array(data.slice(0))
-        : new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-    memoryPdfCache.set(cleanKey, copy);
-  } catch {}
-}
-
-export function getCachedPdfBinary(key: string | null | undefined): Uint8Array | null {
-  if (!key) return null;
-  const cleanKey = key.trim();
-  const hit = memoryPdfCache.get(cleanKey);
-  if (hit && hit.byteLength > 0) {
-    return new Uint8Array(hit.buffer.slice(hit.byteOffset, hit.byteOffset + hit.byteLength));
-  }
-  return null;
-}
+import { cachePdfBinary, getCachedPdfBinary } from '../../utils/pdfCache';
+export { cachePdfBinary, getCachedPdfBinary };
 
 const decodeDataUrlToBytes = (dataUrl: string): Uint8Array | null => {
   try {
@@ -92,24 +71,22 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   assignmentContent,
 }) => {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
-  const [currentPage, setCurrentPage] = useState<number>(1);
   const [numPages, setNumPages] = useState<number>(0);
   const [scale, setScale] = useState<number>(initialScale);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [embeddedUrl, setEmbeddedUrl] = useState<string | null>(null);
   const [useGoogleViewer, setUseGoogleViewer] = useState<boolean>(false);
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const renderTaskRef = useRef<any>(null);
+  const pageCanvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
 
-  // 1. Tải tài liệu PDF bằng bản sao ArrayBuffer, bộ nhớ đệm hoặc nhúng trực tiếp an toàn không gây lỗi CORS fetch
+  // 1. Tải tài liệu PDF bằng ArrayBuffer, bộ nhớ đệm, URL từ Firebase Storage hoặc PDF.js network loader
   useEffect(() => {
     let isCancelled = false;
     setIsLoading(true);
     setPdfDoc(null);
     setEmbeddedUrl(null);
     setNumPages(0);
-    setCurrentPage(1);
+    pageCanvasRefs.current = {};
 
     const loadPdf = async () => {
       try {
@@ -129,12 +106,12 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           if (fileName) cachePdfBinary(fileName, rawBytes);
         }
 
-        // Ưu tiên 2: Kiểm tra bộ nhớ đệm phiên làm việc theo URL hoặc tên tệp
+        // Ưu tiên 2: Kiểm tra bộ nhớ đệm phiên làm việc
         if (!rawBytes || rawBytes.byteLength === 0) {
           rawBytes = getCachedPdfBinary(trimmedUrl) || getCachedPdfBinary(fileName);
         }
 
-        // Ưu tiên 3: Giải mã trực tiếp nếu là chuỗi Data URL (data:application/pdf;base64,...) mà không gọi fetch
+        // Ưu tiên 3: Data URL
         if ((!rawBytes || rawBytes.byteLength === 0) && trimmedUrl.startsWith('data:')) {
           rawBytes = decodeDataUrlToBytes(trimmedUrl);
           if (rawBytes && fileName) {
@@ -142,7 +119,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           }
         }
 
-        // Ưu tiên 4: Nếu là Blob URL nội bộ (cùng origin)
+        // Ưu tiên 4: Blob URL
         if ((!rawBytes || rawBytes.byteLength === 0) && trimmedUrl.startsWith('blob:')) {
           try {
             const response = await fetch(trimmedUrl);
@@ -153,49 +130,15 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                 if (fileName) cachePdfBinary(fileName, rawBytes);
               }
             }
-          } catch {
-            // Nếu Blob URL không đọc được qua fetch, dùng trình xem nhúng trực tiếp
-            if (!isCancelled) {
-              setEmbeddedUrl(trimmedUrl);
-              setIsLoading(false);
-            }
-            return;
-          }
+          } catch {}
         }
 
-        // Ưu tiên 5: Nếu là đường dẫn HTTP/HTTPS (ví dụ Firebase Storage URL)
-        if ((!rawBytes || rawBytes.byteLength === 0) && (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://'))) {
-          const isSameOrigin = typeof window !== 'undefined' && trimmedUrl.startsWith(window.location.origin);
-          if (isSameOrigin) {
-            try {
-              const response = await fetch(trimmedUrl);
-              if (response.ok) {
-                const arrayBuf = await response.arrayBuffer();
-                if (arrayBuf.byteLength > 0) {
-                  rawBytes = new Uint8Array(arrayBuf);
-                }
-              }
-            } catch {}
-          }
-
-          // Với URL từ Firebase Storage hoặc tên miền ngoài: Không gọi window.fetch để tránh lỗi CORS Failed to fetch,
-          // chuyển sang chế độ hiển thị PDF nhúng trực tiếp (Iframe / Google Docs Viewer)
-          if (!rawBytes || rawBytes.byteLength === 0) {
-            if (!isCancelled) {
-              setEmbeddedUrl(trimmedUrl);
-              setIsLoading(false);
-            }
-            return;
-          }
-        }
-
-        // Nếu có dữ liệu nhị phân PDF -> kết xuất sắc nét bằng PDF.js lên Canvas
+        // Nếu có rawBytes -> Kết xuất bằng PDF.js với dữ liệu nhị phân
         if (rawBytes && rawBytes.byteLength > 0) {
           const loadingTask = pdfjsLib.getDocument({
             data: rawBytes,
             cMapPacked: true,
           });
-
           const doc = await loadingTask.promise;
           if (isCancelled) return;
 
@@ -205,7 +148,84 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           return;
         }
 
-        // Trường hợp bài tập mẫu chưa có file nhị phân -> hiển thị trang đề bài A4 chuẩn
+        // Ưu tiên 5: URL HTTP/HTTPS (ví dụ Firebase Storage URL) -> Sử dụng proxy /api/proxy-file để tránh lỗi CORS và ngăn Chrome bật hộp thoại Save As
+        if ((!rawBytes || rawBytes.byteLength === 0) && (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://'))) {
+          // 5.1 Thử nạp qua API proxy của hệ thống
+          try {
+            const proxyUrl = getProxiedFileUrl(trimmedUrl);
+            const res = await fetch(proxyUrl);
+            if (res.ok) {
+              const buf = await res.arrayBuffer();
+              if (buf.byteLength > 0) {
+                rawBytes = new Uint8Array(buf);
+                cachePdfBinary(trimmedUrl, rawBytes);
+                if (fileName) cachePdfBinary(fileName, rawBytes);
+
+                const loadingTask = pdfjsLib.getDocument({
+                  data: rawBytes,
+                  cMapPacked: true,
+                });
+                const doc = await loadingTask.promise;
+                if (!isCancelled) {
+                  setPdfDoc(doc);
+                  setNumPages(doc.numPages);
+                  setIsLoading(false);
+                }
+                return;
+              }
+            }
+          } catch (proxyErr) {
+            console.warn('Lỗi fetch PDF qua proxy:', proxyErr);
+          }
+
+          // 5.2 Thử fetch trực tiếp phòng khi URL hỗ trợ sẵn CORS
+          try {
+            const res = await fetch(trimmedUrl, { mode: 'cors' });
+            if (res.ok) {
+              const buf = await res.arrayBuffer();
+              if (buf.byteLength > 0) {
+                rawBytes = new Uint8Array(buf);
+                cachePdfBinary(trimmedUrl, rawBytes);
+                if (fileName) cachePdfBinary(fileName, rawBytes);
+
+                const loadingTask = pdfjsLib.getDocument({
+                  data: rawBytes,
+                  cMapPacked: true,
+                });
+                const doc = await loadingTask.promise;
+                if (!isCancelled) {
+                  setPdfDoc(doc);
+                  setNumPages(doc.numPages);
+                  setIsLoading(false);
+                }
+                return;
+              }
+            }
+          } catch {}
+
+          // 5.3 Thử PDF.js URL loader qua proxy hoặc url gốc
+          try {
+            const loadingTask = pdfjsLib.getDocument({
+              url: getProxiedFileUrl(trimmedUrl),
+              cMapPacked: true,
+            });
+            const doc = await loadingTask.promise;
+            if (!isCancelled) {
+              setPdfDoc(doc);
+              setNumPages(doc.numPages);
+              setIsLoading(false);
+            }
+            return;
+          } catch (urlErr) {
+            console.warn('PDF.js URL loader fallback:', urlErr);
+          }
+
+          if (!isCancelled) {
+            setIsLoading(false);
+          }
+          return;
+        }
+
         if (!isCancelled) {
           setIsLoading(false);
         }
@@ -226,115 +246,73 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     };
   }, [fileUrl, fileData, fileName]);
 
-  // 2. Kết xuất trang hiện tại lên Canvas
+  // 2. Kết xuất TẤT CẢ CÁC TRANG của tài liệu PDF lần lượt lên các canvas dọc liên tục
   useEffect(() => {
-    if (!pdfDoc || !canvasRef.current || currentPage < 1) return;
+    if (!pdfDoc || numPages < 1) return;
 
     let isCancelled = false;
 
-    const renderPage = async () => {
-      try {
-        if (renderTaskRef.current) {
-          try {
-            renderTaskRef.current.cancel();
-          } catch {}
-        }
+    const renderAllPages = async () => {
+      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        if (isCancelled) break;
+        try {
+          const page = await pdfDoc.getPage(pageNum);
+          if (isCancelled) break;
 
-        const page = await pdfDoc.getPage(currentPage);
-        if (isCancelled) return;
+          const canvas = pageCanvasRefs.current[pageNum];
+          if (!canvas) continue;
 
-        const canvas = canvasRef.current;
-        if (!canvas) return;
+          const context = canvas.getContext('2d');
+          if (!context) continue;
 
-        const context = canvas.getContext('2d');
-        if (!context) return;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          const currentScale = inlineMode ? scale * 1.0 : scale * 1.25;
+          const viewport = page.getViewport({ scale: currentScale });
 
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const currentScale = inlineMode ? scale * 1.0 : scale * 1.25;
-        const viewport = page.getViewport({ scale: currentScale });
+          canvas.width = Math.floor(viewport.width * dpr);
+          canvas.height = Math.floor(viewport.height * dpr);
+          canvas.style.width = `${Math.floor(viewport.width)}px`;
+          canvas.style.height = `${Math.floor(viewport.height)}px`;
 
-        canvas.width = Math.floor(viewport.width * dpr);
-        canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = 'auto';
-        canvas.style.maxWidth = scale > 1 ? 'none' : '100%';
+          context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const renderContext = {
+            canvasContext: context,
+            viewport: viewport,
+            canvas: canvas,
+          } as any;
 
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-          canvas: canvas,
-        };
-
-        const renderTask = page.render(renderContext);
-        renderTaskRef.current = renderTask;
-
-        await renderTask.promise;
-      } catch (err: any) {
-        if (err?.name !== 'RenderingCancelledException' && !isCancelled) {
-          // Bỏ qua cảnh báo khi hủy render
+          await page.render(renderContext).promise;
+        } catch (err: any) {
+          if (err?.name !== 'RenderingCancelledException' && !isCancelled) {
+            console.warn(`Lỗi render trang PDF ${pageNum}:`, err);
+          }
         }
       }
     };
 
-    renderPage();
+    renderAllPages();
 
     return () => {
       isCancelled = true;
-      if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch {}
-      }
     };
-  }, [pdfDoc, currentPage, scale, inlineMode]);
+  }, [pdfDoc, numPages, scale, inlineMode]);
 
-  const handlePrevPage = () => setCurrentPage((p) => Math.max(p - 1, 1));
-  const handleNextPage = () => setCurrentPage((p) => Math.min(p + 1, numPages));
   const handleZoomIn = () => setScale((s) => Math.min(s + 0.15, 2.2));
   const handleZoomOut = () => setScale((s) => Math.max(s - 0.15, 0.5));
   const handleResetZoom = () => setScale(initialScale);
 
-  const resolvedIframeSrc = embeddedUrl
-    ? useGoogleViewer && (embeddedUrl.startsWith('http://') || embeddedUrl.startsWith('https://'))
-      ? `https://docs.google.com/viewer?url=${encodeURIComponent(embeddedUrl)}&embedded=true`
-      : embeddedUrl
-    : null;
+  // Iframe Google Docs viewer đã được loại bỏ hoàn toàn để tránh trình duyệt ép tải file "viewer" về máy
 
   return (
     <div className={`flex flex-col w-full h-full bg-slate-200/80 rounded-2xl overflow-hidden border border-slate-300 ${className}`}>
-      {/* THANH CÔNG CỤ ĐIỀU KHIỂN TRANG & THU PHÓNG */}
+      {/* THANH CÔNG CỤ ĐIỀU KHIỂN & THU PHÓNG */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-white border-b border-slate-200 text-xs shrink-0 select-none shadow-2xs">
         {pdfDoc ? (
-          <>
-            {/* Phân trang Canvas PDF */}
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                disabled={currentPage <= 1 || isLoading}
-                onClick={handlePrevPage}
-                className="p-1 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-35 transition-colors cursor-pointer"
-                title="Trang trước"
-              >
-                <ChevronLeft className="w-4 h-4 text-slate-700" />
-              </button>
-
-              <span className="text-[11px] font-black text-slate-700 min-w-[78px] text-center whitespace-nowrap">
-                Trang {numPages > 0 ? currentPage : 0} / {numPages}
-              </span>
-
-              <button
-                type="button"
-                disabled={currentPage >= numPages || isLoading}
-                onClick={handleNextPage}
-                className="p-1 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-35 transition-colors cursor-pointer"
-                title="Trang sau"
-              >
-                <ChevronRight className="w-4 h-4 text-slate-700" />
-              </button>
-            </div>
-
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-black text-[#0B486B] bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">
+              📄 Tổng số trang: {numPages} trang (Xem tất cả)
+            </span>
             {/* Nút thu phóng */}
             <div className="flex items-center gap-1">
               <button
@@ -368,23 +346,13 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                 <RotateCw className="w-3.5 h-3.5" />
               </button>
             </div>
-          </>
+          </div>
         ) : (
           <div className="flex items-center gap-2 min-w-0">
             <FileText className="w-4 h-4 text-rose-600 shrink-0" />
             <span className="text-[11px] font-bold text-slate-700 truncate max-w-[240px]" title={fileName}>
               {fileName}
             </span>
-            {embeddedUrl && (embeddedUrl.startsWith('http://') || embeddedUrl.startsWith('https://')) && (
-              <button
-                type="button"
-                onClick={() => setUseGoogleViewer((prev) => !prev)}
-                className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold border border-slate-200 transition-colors cursor-pointer"
-                title="Chuyển đổi chế độ hiển thị PDF"
-              >
-                {useGoogleViewer ? 'Chế độ: Google Viewer' : 'Đổi chế độ xem'}
-              </button>
-            )}
           </div>
         )}
 
@@ -414,51 +382,43 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         </div>
       </div>
 
-      {/* KHUNG HIỂN THỊ TRANG TÀI LIỆU PDF */}
-      <div className="flex-1 overflow-auto p-3 sm:p-5 flex items-start justify-center min-h-[380px]">
+      {/* KHUNG HIỂN THỊ TẤT CẢ CÁC TRANG PDF DỌC LIÊN TỤC */}
+      <div className="flex-1 overflow-auto p-4 sm:p-6 flex flex-col items-center space-y-6 min-h-[420px] bg-slate-200/90">
         {isLoading && (
           <div className="flex flex-col items-center justify-center p-10 text-slate-500 space-y-2.5 m-auto">
             <Loader2 className="w-7 h-7 text-[#0072B5] animate-spin" />
-            <p className="text-xs font-bold text-slate-700">Đang tải trang xem trước PDF...</p>
+            <p className="text-xs font-bold text-slate-700">Đang tải toàn bộ các trang tài liệu PDF...</p>
           </div>
         )}
 
-        {/* Chế độ 1: Kết xuất bằng PDF.js Canvas */}
-        <div
-          className={`flex flex-col items-center shadow-xl rounded-lg bg-white my-auto overflow-hidden ${
-            isLoading || !pdfDoc ? 'hidden' : ''
-          }`}
-        >
-          <canvas ref={canvasRef} className="block max-w-full h-auto" />
-        </div>
-
-        {/* Chế độ 2: Nhúng và render trực tiếp nội dung PDF ngay trên giao diện preview, có thanh cuộn xem các trang và nút tải về bên dưới */}
-        {!isLoading && !pdfDoc && resolvedIframeSrc && (
-          <div className="w-full h-full flex flex-col items-center space-y-4">
-            <div className="w-full h-[700px] bg-white rounded-2xl shadow-xl border border-slate-300 overflow-hidden">
-              <iframe
-                src={`https://docs.google.com/viewer?url=${encodeURIComponent(resolvedIframeSrc)}&embedded=true`}
-                title={fileName}
-                className="w-full h-full border-0"
-              />
-            </div>
-            {onDownload && (
-              <div className="pt-1 pb-2">
-                <button
-                  type="button"
-                  onClick={onDownload}
-                  className="inline-flex items-center gap-2 px-6 py-2.5 bg-[#0072B5] hover:bg-[#0B486B] text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Tải Tệp PDF Xuống Máy</span>
-                </button>
+        {/* Render tất cả các trang PDF (1 đến numPages) theo thứ tự */}
+        {!isLoading && pdfDoc && numPages > 0 && (
+          <div className="flex flex-col items-center space-y-6 w-full max-w-4xl mx-auto">
+            {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
+              <div
+                key={pageNum}
+                className="flex flex-col items-center shadow-xl rounded-xl bg-white overflow-hidden border border-slate-300 w-full relative group"
+              >
+                {/* Header nhãn số trang */}
+                <div className="w-full bg-slate-50 border-b border-slate-200 px-4 py-1.5 flex items-center justify-between text-[11px] font-extrabold text-slate-500">
+                  <span>Trang {pageNum} / {numPages}</span>
+                  <span className="text-[#0072B5] font-bold">{fileName}</span>
+                </div>
+                <div className="p-3 bg-white flex justify-center w-full overflow-x-auto">
+                  <canvas
+                    ref={(el) => {
+                      pageCanvasRefs.current[pageNum] = el;
+                    }}
+                    className="block max-w-full h-auto shadow-sm"
+                  />
+                </div>
               </div>
-            )}
+            ))}
           </div>
         )}
 
-        {/* Chế độ 3: Trang đề bài chuẩn A4 khi xem bài tập mẫu không kèm dữ liệu nhị phân */}
-        {!isLoading && !pdfDoc && !resolvedIframeSrc && (
+        {/* Trang thông tin & đề bài khi chưa/không kết xuất được trang PDF */}
+        {!isLoading && (!pdfDoc || numPages === 0) && (
           <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-300 p-6 sm:p-10 my-auto space-y-5 text-slate-800">
             <div className="flex items-start justify-between border-b border-slate-200 pb-4 gap-4">
               <div className="space-y-1">

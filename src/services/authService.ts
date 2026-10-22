@@ -2043,11 +2043,9 @@ export function purgeLocalTestCache(): void {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (key && (
-        key.startsWith('tt_hocgioi_teachers_') ||
-        key.startsWith('tt_hocgioi_students_') ||
-        key.startsWith('tt_hocgioi_classes_') ||
         key.startsWith('mock_') ||
-        key.startsWith('test_')
+        key.startsWith('test_') ||
+        key.startsWith('legacy_test_')
       )) {
         keysToRemove.push(key);
       }

@@ -18,7 +18,10 @@ import {
   KeyRound,
   Building2,
   Crown,
-  X
+  X,
+  CalendarCheck,
+  Award,
+  MessageSquare
 } from 'lucide-react';
 import { BrandLogo } from './BrandLogo';
 import { UserRole } from './Header';
@@ -37,6 +40,9 @@ export type NavItemKey =
   | 'teacher-assignments' 
   | 'teacher-grading'
   | 'parent-portal'
+  | 'parent-attendance'
+  | 'parent-homework'
+  | 'parent-remarks'
   | 'reports'
   | 'settings';
 
@@ -75,6 +81,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Collapsible sections
   const [isAdminOpen, setIsAdminOpen] = useState(true);
   const [isTeacherOpen, setIsTeacherOpen] = useState(true);
+  const [isParentOpen, setIsParentOpen] = useState(true);
 
   const handleItemClick = (key: NavItemKey) => {
     onNavSelect(key);
@@ -215,38 +222,79 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </div>
           ) : isParentUser ? (
-            /* 3. DÀNH CHO PHỤ HUYNH: CHỈ HIỂN THỊ MENU PHỤ HUYNH (SỔ LIÊN LẠC), ẨN CÁC MENU KHÁC */
-            <div className="space-y-3 pt-1">
-              <div className="px-3.5 py-1.5 text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-2">
-                <HeartHandshake className="w-4.5 h-4.5 text-[#F39C12] shrink-0" />
-                <span className="text-[13px] font-black tracking-wide text-slate-800">PHỤ HUYNH</span>
-              </div>
-
+            /* 3. DÀNH CHO PHỤ HUYNH: HIỂN THỊ MENU PHỤ HUYNH VỚI 3 MENU CON: ĐIỂM DANH, BÀI TẬP, NHẬN XÉT */
+            <div className="space-y-2 pt-1">
+              {/* Header: PHỤ HUYNH */}
               <button
                 type="button"
-                onClick={() => handleItemClick('parent-portal')}
-                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-2xl text-[13px] transition-all cursor-pointer ${
-                  activeNav === 'parent-portal'
-                    ? 'bg-[#FFF8EE] text-[#D97706] border border-amber-200/90 font-bold shadow-2xs ring-1 ring-amber-400/20'
-                    : 'text-slate-700 hover:bg-slate-50 font-medium'
-                }`}
+                onClick={() => setIsParentOpen(!isParentOpen)}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 text-xs font-black uppercase tracking-wider text-slate-800 hover:text-slate-900 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer"
               >
-                <div className="w-8 h-8 rounded-xl bg-amber-100/90 flex items-center justify-center shrink-0 shadow-2xs">
-                  <HeartHandshake className="w-4.5 h-4.5 text-[#D97706]" />
-                </div>
-                <div className="text-left min-w-0">
-                  <div className="font-extrabold text-[13px] leading-tight truncate">Phụ huynh (Sổ liên lạc)</div>
-                  <div className="text-[10px] text-amber-700 font-medium mt-0.5 truncate">Theo dõi học tập &amp; Điểm danh</div>
-                </div>
+                <span className="flex items-center gap-2">
+                  <HeartHandshake className="w-4.5 h-4.5 text-[#F39C12] shrink-0" />
+                  <span className="text-[13px] font-black tracking-wide text-slate-800">PHỤ HUYNH</span>
+                </span>
+                {isParentOpen ? (
+                  <ChevronDown className="w-4 h-4 text-slate-500 transition-transform" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-slate-500 transition-transform" />
+                )}
               </button>
 
-              <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-2xl text-xs text-slate-700 space-y-1.5 mt-4">
+              {/* Các menu con của Phụ huynh */}
+              {isParentOpen && (
+                <div className="space-y-1.5 px-0.5 mt-1">
+                  {/* Menu con 1: Điểm danh */}
+                  <button
+                    type="button"
+                    onClick={() => handleItemClick('parent-attendance')}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-[13px] transition-all cursor-pointer ${
+                      activeNav === 'parent-attendance' || activeNav === 'parent-portal'
+                        ? 'bg-[#E8F8F0] text-[#00A86B] font-bold shadow-2xs'
+                        : 'text-slate-800 hover:bg-slate-50 font-medium'
+                    }`}
+                  >
+                    <CalendarCheck className="w-4.5 h-4.5 text-[#00A86B] shrink-0" />
+                    <span>Điểm danh</span>
+                  </button>
+
+                  {/* Menu con 2: Bài tập */}
+                  <button
+                    type="button"
+                    onClick={() => handleItemClick('parent-homework')}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-[13px] transition-all cursor-pointer ${
+                      activeNav === 'parent-homework'
+                        ? 'bg-[#FEF5E7] text-[#D97706] font-bold shadow-2xs'
+                        : 'text-slate-800 hover:bg-slate-50 font-medium'
+                    }`}
+                  >
+                    <Award className="w-4.5 h-4.5 text-[#F39C12] shrink-0" />
+                    <span>Bài tập</span>
+                  </button>
+
+                  {/* Menu con 3: Nhận xét */}
+                  <button
+                    type="button"
+                    onClick={() => handleItemClick('parent-remarks')}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-[13px] transition-all cursor-pointer ${
+                      activeNav === 'parent-remarks'
+                        ? 'bg-[#EBF5FB] text-[#0072B5] font-bold shadow-2xs'
+                        : 'text-slate-800 hover:bg-slate-50 font-medium'
+                    }`}
+                  >
+                    <MessageSquare className="w-4.5 h-4.5 text-[#0072B5] shrink-0" />
+                    <span>Nhận xét</span>
+                  </button>
+                </div>
+              )}
+
+              <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-2xl text-xs text-slate-700 space-y-1.5 mt-3">
                 <div className="font-extrabold text-amber-900 flex items-center gap-1.5 text-[11px]">
                   <Sparkles className="w-3.5 h-3.5 text-[#F39C12]" />
                   <span>Sổ liên lạc điện tử</span>
                 </div>
                 <p className="text-[11px] leading-relaxed text-slate-600">
-                  Phụ huynh có thể theo dõi chuyên cần, lịch học, kết quả bài tập, nhận xét từ giáo viên và gửi đơn xin nghỉ trực tuyến.
+                  Chọn từng mục ở menu trên để xem chuyên cần, bài tập hoặc nhận xét sau mỗi ca học.
                 </p>
               </div>
             </div>
@@ -375,6 +423,71 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <Building2 className="w-4 h-4 text-[#0072B5] shrink-0" />
                   <span>Thông tin Trường của bạn</span>
                 </button>
+              </div>
+
+              {/* Section: Sổ liên lạc Phụ Huynh */}
+              <div className="pt-2 border-t border-slate-200/80">
+                <button
+                  type="button"
+                  onClick={() => setIsParentOpen(!isParentOpen)}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-black uppercase tracking-wider text-slate-800 hover:text-slate-900 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <HeartHandshake className="w-4 h-4 text-[#F39C12] shrink-0" />
+                    <span className="text-[13px] font-black tracking-wide text-slate-800">PHỤ HUYNH</span>
+                  </span>
+                  {isParentOpen ? (
+                    <ChevronDown className="w-4 h-4 text-slate-500 transition-transform" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-slate-500 transition-transform" />
+                  )}
+                </button>
+
+                {isParentOpen && (
+                  <div className="space-y-1 px-0.5 mt-1">
+                    {/* Menu con 1: Điểm danh */}
+                    <button
+                      type="button"
+                      onClick={() => handleItemClick('parent-attendance')}
+                      className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-[13px] transition-all cursor-pointer ${
+                        activeNav === 'parent-attendance' || activeNav === 'parent-portal'
+                          ? 'bg-[#E8F8F0] text-[#00A86B] font-bold shadow-2xs'
+                          : 'text-slate-800 hover:bg-slate-50 font-medium'
+                      }`}
+                    >
+                      <CalendarCheck className="w-4.5 h-4.5 text-[#00A86B] shrink-0" />
+                      <span>Điểm danh</span>
+                    </button>
+
+                    {/* Menu con 2: Bài tập */}
+                    <button
+                      type="button"
+                      onClick={() => handleItemClick('parent-homework')}
+                      className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-[13px] transition-all cursor-pointer ${
+                        activeNav === 'parent-homework'
+                          ? 'bg-[#FEF5E7] text-[#D97706] font-bold shadow-2xs'
+                          : 'text-slate-800 hover:bg-slate-50 font-medium'
+                      }`}
+                    >
+                      <Award className="w-4.5 h-4.5 text-[#F39C12] shrink-0" />
+                      <span>Bài tập</span>
+                    </button>
+
+                    {/* Menu con 3: Nhận xét */}
+                    <button
+                      type="button"
+                      onClick={() => handleItemClick('parent-remarks')}
+                      className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-[13px] transition-all cursor-pointer ${
+                        activeNav === 'parent-remarks'
+                          ? 'bg-[#EBF5FB] text-[#0072B5] font-bold shadow-2xs'
+                          : 'text-slate-800 hover:bg-slate-50 font-medium'
+                      }`}
+                    >
+                      <MessageSquare className="w-4.5 h-4.5 text-[#0072B5] shrink-0" />
+                      <span>Nhận xét</span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

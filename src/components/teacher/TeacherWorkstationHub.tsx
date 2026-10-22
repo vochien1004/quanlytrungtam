@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
 import { 
   ClipboardCheck, 
   BookMarked, 
@@ -56,7 +56,7 @@ import {
 } from '../../services/firebaseService';
 import { AccountAvatar } from '../common/AccountAvatar';
 import { DocumentPreviewModal, DocumentPreviewData } from '../common/DocumentPreviewModal';
-import { PdfViewer } from '../common/PdfViewer';
+const PdfViewer = lazy(() => import('../common/PdfViewer').then((m) => ({ default: m.PdfViewer })));
 
 interface TeacherWorkstationHubProps {
   teacher?: TeacherItem;
@@ -2395,13 +2395,15 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                     {hwAttachedFileType === 'pdf' && (
                       <div className="w-full bg-slate-100 rounded-xl p-1 border border-slate-200">
                         {(hwAttachedFileData || hwAttachedFileUrl) ? (
-                          <PdfViewer
-                            fileUrl={hwAttachedFileUrl}
-                            fileData={hwAttachedFileData}
-                            fileName={hwAttachedFile || 'Tai_lieu.pdf'}
-                            inlineMode={true}
-                            className="h-[420px]"
-                          />
+                          <Suspense fallback={<div className="p-6 text-center text-xs text-slate-500 font-bold">Đang tải trình đọc PDF...</div>}>
+                            <PdfViewer
+                              fileUrl={hwAttachedFileUrl}
+                              fileData={hwAttachedFileData}
+                              fileName={hwAttachedFile || 'Tai_lieu.pdf'}
+                              inlineMode={true}
+                              className="h-[420px]"
+                            />
+                          </Suspense>
                         ) : (
                           <div className="p-6 text-center text-xs text-slate-500 font-bold">Đang tải tài liệu PDF...</div>
                         )}

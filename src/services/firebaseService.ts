@@ -40,7 +40,7 @@ import {
 } from 'firebase/auth';
 import { db, auth, getSecondaryAuth, getSecondaryDb, getSecondaryStorage, storage } from '../firebase/config';
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { cachePdfBinary } from '../components/common/PdfViewer';
+import { cachePdfBinary } from '../utils/pdfCache';
 import {
   ClassItem,
   TeacherItem,

@@ -11,6 +11,18 @@ export default defineConfig(() => {
         '@': path.resolve(import.meta.dirname, '.'),
       },
     },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'firebase/app',
+        'firebase/firestore',
+        'firebase/auth',
+        'firebase/storage',
+        'lucide-react',
+      ],
+      exclude: ['pdfjs-dist', 'xlsx', 'xlsx-js-style', 'mammoth'],
+    },
     build: {
       chunkSizeWarningLimit: 1200,
       rollupOptions: {
