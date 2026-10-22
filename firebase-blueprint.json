@@ -2,17 +2,23 @@
   "entities": {
     "Center": {
       "title": "Center",
-      "description": "Trung tâm dạy thêm / cơ sở thuộc hệ thống Đa Trung Tâm",
+      "description": "Trung tâm dạy thêm / cơ sở thuộc hệ thống Đa Trung Tâm (Chỉ lưu metadata, không chứa mảng phình to)",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "centerId": { "type": "string" },
         "name": { "type": "string" },
         "code": { "type": "string" },
         "address": { "type": "string" },
         "phone": { "type": "string" },
         "email": { "type": "string" },
-        "status": { "type": "string", "enum": ["active", "inactive"] },
-        "createdAt": { "type": "string" }
+        "status": { "type": "string", "enum": ["active", "expired", "suspended"] },
+        "packagePlan": { "type": "string", "enum": ["Basic", "Standard", "Premium", "Enterprise"] },
+        "expiryDate": { "type": "string" },
+        "adminUid": { "type": "string" },
+        "adminUsername": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
       },
       "required": ["name", "code"]
     },
@@ -31,21 +37,27 @@
     },
     "Class": {
       "title": "Class",
-      "description": "Lớp học thuộc sub-collection của một trung tâm",
+      "description": "Lớp học thuộc sub-collection /centers/{centerId}/classes/{classId}",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "centerId": { "type": "string" },
         "classCode": { "type": "string" },
         "name": { "type": "string" },
         "subject": { "type": "string" },
         "teacherId": { "type": "string" },
         "teacherName": { "type": "string" },
+        "teacherPhone": { "type": "string" },
         "room": { "type": "string" },
         "schedule": { "type": "string" },
         "studentCount": { "type": "number" },
         "maxCapacity": { "type": "number" },
-        "status": { "type": "string" }
-      }
+        "pricePerSession": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "pending", "paused"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "centerId", "name", "subject"]
     },
     "User": {
       "title": "User",
@@ -54,6 +66,7 @@
       "properties": {
         "id": { "type": "string" },
         "uid": { "type": "string" },
+        "centerId": { "type": "string" },
         "fullName": { "type": "string" },
         "email": { "type": "string" },
         "phone": { "type": "string" },
@@ -65,48 +78,86 @@
     },
     "Student": {
       "title": "Student",
-      "description": "Học sinh thuộc sub-collection của một trung tâm",
+      "description": "Học sinh thuộc sub-collection /centers/{centerId}/students/{studentId}",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "centerId": { "type": "string" },
         "studentCode": { "type": "string" },
         "name": { "type": "string" },
         "classId": { "type": "string" },
         "className": { "type": "string" },
         "parentName": { "type": "string" },
         "parentPhone": { "type": "string" },
-        "attendanceStatus": { "type": "string" },
+        "attendanceStatus": { "type": "string", "enum": ["present", "absent", "excused", "unexcused"] },
         "gpa": { "type": "number" }
       }
     },
     "Attendance": {
       "title": "Attendance",
-      "description": "Sổ điểm danh thuộc sub-collection của một trung tâm",
+      "description": "Phiên điểm danh theo buổi học thuộc sub-collection /centers/{centerId}/attendance/{attendanceId}",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "centerId": { "type": "string" },
         "classId": { "type": "string" },
+        "className": { "type": "string" },
         "date": { "type": "string" },
         "teacherId": { "type": "string" },
-        "records": { "type": "array" }
-      }
+        "teacherName": { "type": "string" },
+        "sessionNote": { "type": "string" },
+        "records": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "centerId", "classId", "date"]
     },
     "Assignment": {
       "title": "Assignment",
-      "description": "Bài tập thuộc sub-collection của một trung tâm",
+      "description": "Bài tập thuộc sub-collection /centers/{centerId}/assignments/{assignmentId}",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "centerId": { "type": "string" },
         "title": { "type": "string" },
+        "subject": { "type": "string" },
         "classId": { "type": "string" },
-        "teacherId": { "type": "string" }
-      }
+        "className": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "assignedDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["working", "completed", "grading", "graded"] },
+        "maxScore": { "type": "number" },
+        "attachedFileUrl": { "type": "string" },
+        "storagePath": { "type": "string" }
+      },
+      "required": ["id", "centerId", "title", "classId"]
+    },
+    "AssignmentSubmission": {
+      "title": "AssignmentSubmission",
+      "description": "Bài nộp của học sinh thuộc sub-collection /centers/{centerId}/assignments/{assignmentId}/submissions/{submissionId}",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "submittedAt": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileType": { "type": "string" },
+        "status": { "type": "string", "enum": ["submitted", "graded"] },
+        "score": { "type": "number" },
+        "feedback": { "type": "string" }
+      },
+      "required": ["id", "assignmentId", "studentId", "fileUrl"]
     }
   },
   "firestore": {
     "/centers/{centerId}": {
       "schema": { "$ref": "#/entities/Center" },
-      "description": "Danh sách các cơ sở / trung tâm thuộc hệ thống Đa Trung Tâm"
+      "description": "Document trung tâm chỉ lưu metadata định danh và hạn bản quyền (không chứa mảng phình to)"
     },
     "/users/{uid}": {
       "schema": { "$ref": "#/entities/GlobalUser" },
@@ -120,6 +171,10 @@
       "schema": { "$ref": "#/entities/Class" },
       "description": "Sub-collection lớp học thuộc trung tâm"
     },
+    "/centers/{centerId}/teachers/{teacherId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Sub-collection giáo viên thuộc trung tâm"
+    },
     "/centers/{centerId}/students/{studentId}": {
       "schema": { "$ref": "#/entities/Student" },
       "description": "Sub-collection học sinh thuộc trung tâm"
@@ -131,6 +186,10 @@
     "/centers/{centerId}/assignments/{assignmentId}": {
       "schema": { "$ref": "#/entities/Assignment" },
       "description": "Sub-collection bài tập thuộc trung tâm"
+    },
+    "/centers/{centerId}/assignments/{assignmentId}/submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/AssignmentSubmission" },
+      "description": "Sub-collection bài nộp của từng học sinh trong một bài tập"
     }
   }
 }

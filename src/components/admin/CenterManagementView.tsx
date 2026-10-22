@@ -101,11 +101,106 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
     }
   };
 
-  const isExpired = currentCenter.expiryDate && new Date(currentCenter.expiryDate) < new Date();
+  // Tính toán số ngày còn lại của hạn dịch vụ (chuẩn hóa theo mốc 0h đầu ngày)
+  const expiryRaw = currentCenter.expiryDate;
+  let daysRemaining: number | null = null;
+  let isExpiringSoon = false;
+  let isExpired = false;
+
+  if (expiryRaw) {
+    const parts = expiryRaw.split('-');
+    let expiryDate: Date;
+    if (parts.length === 3) {
+      expiryDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    } else {
+      expiryDate = new Date(expiryRaw);
+    }
+
+    if (!isNaN(expiryDate.getTime())) {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const expiryStartOfDay = new Date(expiryDate.getFullYear(), expiryDate.getMonth(), expiryDate.getDate()).getTime();
+      const diffMs = expiryStartOfDay - startOfToday;
+      const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+      
+      daysRemaining = diffDays;
+      isExpired = diffDays < 0;
+      isExpiringSoon = diffDays >= 0 && diffDays <= 7;
+    }
+  }
+
   const isSuspended = currentCenter.status === 'suspended';
 
   return (
     <div className="space-y-6 animate-fade-in text-slate-800 pb-12">
+      {/* CẢNH BÁO NỔI BẬT ĐẦU TRANG CHO CENTER ADMIN NẾU SẮP HẾT HẠN HOẶC ĐÃ HẾT HẠN */}
+      {isExpired ? (
+        <div className="rounded-3xl bg-rose-50 border-2 border-rose-400 p-5 md:p-6 shadow-md flex flex-wrap items-center justify-between gap-4 animate-fade-in">
+          <div className="flex items-start gap-4 max-w-3xl">
+            <div className="p-3 bg-rose-600 rounded-2xl text-white shadow-sm shrink-0">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-200 text-rose-900 text-[11px] font-black uppercase tracking-wider">
+                  ✕ Dịch Vụ Đã Quá Hạn
+                </span>
+                <span className="text-xs font-black text-rose-700">
+                  Quá hạn {Math.abs(daysRemaining ?? 0)} ngày
+                </span>
+              </div>
+              <h3 className="text-base md:text-lg font-black text-rose-950">
+                Gói bản quyền của trường đã hết hạn sử dụng!
+              </h3>
+              <p className="text-xs md:text-sm text-rose-800 leading-relaxed font-medium">
+                Hạn dịch vụ đã kết thúc vào ngày <strong>{currentCenter.expiryDate}</strong>. Vui lòng liên hệ ngay Quản Trị Viên Hệ Thống (Super Admin) để thanh toán gia hạn, tránh bị tạm ngừng truy cập các tính năng quản lý và điểm danh.
+              </p>
+            </div>
+          </div>
+          <a
+            href="tel:19006868"
+            className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs shadow-md transition-all cursor-pointer shrink-0"
+          >
+            <Phone className="w-4 h-4" />
+            <span>Hotline Gia Hạn: 1900 6868</span>
+          </a>
+        </div>
+      ) : isExpiringSoon ? (
+        <div className="rounded-3xl bg-gradient-to-r from-amber-500/20 via-orange-500/15 to-amber-500/10 border-2 border-amber-400 p-5 md:p-6 shadow-md flex flex-wrap items-center justify-between gap-4 animate-fade-in">
+          <div className="flex items-start gap-4 max-w-3xl">
+            <div className="p-3 bg-amber-500 rounded-2xl text-white shadow-sm shrink-0 animate-bounce">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500 text-white text-[11px] font-black uppercase tracking-wider shadow-xs">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Cảnh Báo Hết Hạn
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-200 text-amber-900 text-xs font-black">
+                  {daysRemaining === 0 ? 'Hôm nay là ngày cuối cùng' : `Chỉ còn ${daysRemaining} ngày nữa`}
+                </span>
+              </div>
+              <h3 className="text-base md:text-lg font-black text-amber-950">
+                Gói dịch vụ của trường sắp hết hạn sử dụng!
+              </h3>
+              <p className="text-xs md:text-sm text-amber-900 leading-relaxed font-medium">
+                Thời hạn bản quyền hệ thống của trung tâm sẽ kết thúc vào ngày <strong>{currentCenter.expiryDate}</strong> ({daysRemaining === 0 ? 'hôm nay' : `còn ${daysRemaining} ngày`}). Quản trị viên vui lòng liên hệ Super Admin gia hạn sớm để dịch vụ hoạt động liên tục, không làm gián đoạn việc giảng dạy và tương tác phụ huynh.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href="tel:19006868"
+              className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shadow-md transition-all cursor-pointer"
+            >
+              <Phone className="w-4 h-4" />
+              <span>Gia Hạn: 1900 6868</span>
+            </a>
+          </div>
+        </div>
+      ) : null}
+
       {/* Top Banner */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-[#0B486B] via-[#0072B5] to-slate-900 p-6 md:p-8 text-white shadow-xl">
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-6">
@@ -233,16 +328,109 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
         {/* Right Column: License Status & SaaS Policy Note */}
         <div className="lg:col-span-5 space-y-6">
           {/* Card: Thông tin bản quyền SaaS */}
-          <div className="rounded-3xl bg-white border border-slate-200/90 p-6 shadow-xs space-y-5">
-            <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
-              <div className="p-3 rounded-2xl bg-amber-50 text-amber-600">
-                <Crown className="w-6 h-6" />
+          <div className={`rounded-3xl bg-white border p-6 shadow-xs space-y-5 transition-all ${
+            isExpired 
+              ? 'border-rose-400 ring-4 ring-rose-500/10' 
+              : isExpiringSoon 
+                ? 'border-amber-400 ring-4 ring-amber-500/10' 
+                : 'border-slate-200/90'
+          }`}>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className={`p-3 rounded-2xl ${
+                  isExpired 
+                    ? 'bg-rose-50 text-rose-600' 
+                    : isExpiringSoon 
+                      ? 'bg-amber-100 text-amber-700' 
+                      : 'bg-amber-50 text-amber-600'
+                }`}>
+                  <Crown className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-base font-black text-slate-900">Bản Quyền &amp; Hạn Dịch Vụ</h2>
+                  <p className="text-xs text-slate-500 font-medium">Gói cước cấp phép hệ thống SaaS</p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-base font-black text-slate-900">Bản Quyền &amp; Hạn Dịch Vụ</h2>
-                <p className="text-xs text-slate-500 font-medium">Gói cước cấp phép hệ thống SaaS</p>
-              </div>
+
+              {isExpiringSoon && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black bg-amber-500 text-white shadow-xs animate-pulse">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Sắp hết hạn
+                </span>
+              )}
+              {isExpired && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black bg-rose-600 text-white shadow-xs">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Đã hết hạn
+                </span>
+              )}
             </div>
+
+            {/* CẢNH BÁO NỔI BẬT NỘI BỘ CARD KHI GẦN HẾT HẠN (<= 7 NGÀY) */}
+            {isExpiringSoon && (
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-orange-500/15 to-amber-500/10 border-2 border-amber-400 text-amber-950 shadow-xs space-y-2.5">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-xl bg-amber-500 text-white shrink-0 mt-0.5 shadow-xs animate-bounce">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="font-black text-xs uppercase tracking-wide text-amber-950 flex items-center gap-1.5">
+                        ⚠ Gói Cước Sắp Hết Hạn
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-black shadow-xs">
+                        {daysRemaining === 0 ? 'Hết hạn hôm nay' : `Còn ${daysRemaining} ngày`}
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-900 font-medium leading-relaxed">
+                      Thời hạn bản quyền của trường sẽ kết thúc vào <strong>{currentCenter.expiryDate}</strong> ({daysRemaining === 0 ? 'hôm nay' : `chỉ còn ${daysRemaining} ngày nữa`}). Vui lòng liên hệ <strong>Super Admin</strong> để gia hạn, tránh làm gián đoạn việc giảng dạy và điểm danh.
+                    </p>
+                    <div className="pt-0.5 flex flex-wrap items-center gap-2">
+                      <a
+                        href="tel:19006868"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black transition-colors shadow-xs"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                        <span>Hotline Gia Hạn: 1900 6868 / 0912.345.678</span>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* CẢNH BÁO NỔI BẬT NỘI BỘ CARD KHI ĐÃ HẾT HẠN */}
+            {isExpired && (
+              <div className="p-4 rounded-2xl bg-rose-50 border-2 border-rose-400 text-rose-950 shadow-xs space-y-2.5">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-xl bg-rose-600 text-white shrink-0 mt-0.5 shadow-xs">
+                    <AlertCircle className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="font-black text-xs uppercase tracking-wide text-rose-950 block">
+                        ✕ Gói Dịch Vụ Đã Hết Hạn
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-black shadow-xs">
+                        Quá hạn {Math.abs(daysRemaining ?? 0)} ngày
+                      </span>
+                    </div>
+                    <p className="text-xs text-rose-900 font-medium leading-relaxed">
+                      Thời hạn bản quyền đã kết thúc vào ngày <strong>{currentCenter.expiryDate}</strong>. Hệ thống có thể bị tạm ngưng truy cập. Vui lòng liên hệ ngay Quản trị viên Super Admin để kích hoạt lại.
+                    </p>
+                    <div className="pt-0.5 flex flex-wrap items-center gap-2">
+                      <a
+                        href="tel:19006868"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black transition-colors shadow-xs"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                        <span>Hotline Hỗ Trợ: 1900 6868 / 0912.345.678</span>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-4">
               <div className="flex items-center justify-between p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200/70">
@@ -258,19 +446,24 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
               <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80">
                 <div>
                   <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Trạng Thái Kích Hoạt</div>
-                  <div className="mt-0.5">
+                  <div className="mt-1">
                     {isSuspended ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-black bg-rose-100 text-rose-700">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-rose-100 text-rose-700 border border-rose-200">
                         <AlertCircle className="w-3.5 h-3.5" />
                         Tạm Khóa
                       </span>
                     ) : isExpired ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-black bg-rose-100 text-rose-700">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-rose-100 text-rose-700 border border-rose-300">
                         <AlertCircle className="w-3.5 h-3.5" />
-                        Đã Hết Hạn
+                        Đã Hết Hạn Dịch Vụ
+                      </span>
+                    ) : isExpiringSoon ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-amber-100 text-amber-900 border border-amber-300">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
+                        Sắp Hết Hạn ({daysRemaining === 0 ? 'Hôm nay' : `Còn ${daysRemaining} ngày`})
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-black bg-emerald-100 text-emerald-800">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
                         <CheckCircle2 className="w-3.5 h-3.5" />
                         Đang Hoạt Động
                       </span>
@@ -279,25 +472,75 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80">
+              <div className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
+                isExpired 
+                  ? 'bg-rose-50/90 border-rose-300 text-rose-950' 
+                  : isExpiringSoon 
+                    ? 'bg-amber-50/90 border-amber-400 text-amber-950 shadow-xs ring-2 ring-amber-400/20' 
+                    : 'bg-slate-50 border-slate-200/80'
+              }`}>
                 <div>
-                  <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Thời Hạn Dịch Vụ Đến</div>
-                  <div className="text-sm font-black text-slate-900 mt-0.5 flex items-center gap-1.5">
-                    <Calendar className="w-4 h-4 text-[#0072B5]" />
-                    <span>{currentCenter.expiryDate || 'Vô thời hạn'}</span>
+                  <div className={`text-[11px] font-bold uppercase tracking-wider ${
+                    isExpired ? 'text-rose-700' : isExpiringSoon ? 'text-amber-800' : 'text-slate-500'
+                  }`}>
+                    Thời Hạn Dịch Vụ Đến
+                  </div>
+                  <div className="text-sm font-black mt-1 flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <Calendar className={`w-4 h-4 ${
+                        isExpired ? 'text-rose-600' : isExpiringSoon ? 'text-amber-600' : 'text-[#0072B5]'
+                      }`} />
+                      <span>{currentCenter.expiryDate || 'Vô thời hạn'}</span>
+                    </div>
+
+                    {isExpiringSoon && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500 text-white text-[11px] font-black shadow-xs animate-pulse">
+                        <AlertTriangle className="w-3 h-3" />
+                        {daysRemaining === 0 ? 'Hết hạn hôm nay' : `Còn ${daysRemaining} ngày`}
+                      </span>
+                    )}
+
+                    {isExpired && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[11px] font-black shadow-xs">
+                        <AlertCircle className="w-3 h-3" />
+                        Quá hạn {Math.abs(daysRemaining ?? 0)} ngày
+                      </span>
+                    )}
+
+                    {!isExpiringSoon && !isExpired && daysRemaining !== null && (
+                      <span className="text-[11px] font-semibold text-slate-500">
+                        (Còn {daysRemaining} ngày)
+                      </span>
+                    )}
                   </div>
                 </div>
+
+                {isExpiringSoon && (
+                  <div className="text-right shrink-0">
+                    <span className="hidden sm:inline-block text-[10px] font-black uppercase tracking-wider text-amber-800 bg-amber-200/80 px-2 py-1 rounded-lg border border-amber-300">
+                      Cần gia hạn gấp
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
             {/* Note info */}
-            <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200 text-xs text-slate-700 space-y-1.5">
-              <div className="font-extrabold text-[#0B486B] flex items-center gap-1.5">
-                <Info className="w-4 h-4 text-[#0072B5] shrink-0" />
-                <span>Chính Sách Cấp Phép Bản Quyền</span>
+            <div className={`p-4 rounded-2xl border text-xs space-y-1.5 ${
+              isExpiringSoon 
+                ? 'bg-amber-50/70 border-amber-200 text-amber-950' 
+                : isExpired 
+                  ? 'bg-rose-50/70 border-rose-200 text-rose-950' 
+                  : 'bg-blue-50/70 border-blue-200 text-slate-700'
+            }`}>
+              <div className={`font-extrabold flex items-center gap-1.5 ${
+                isExpiringSoon ? 'text-amber-900' : isExpired ? 'text-rose-900' : 'text-[#0B486B]'
+              }`}>
+                <Info className="w-4 h-4 shrink-0" />
+                <span>Chính Sách Cấp Phép &amp; Hướng Dẫn Gia Hạn</span>
               </div>
               <p className="text-[11px] leading-relaxed text-slate-600">
-                Thời hạn hợp đồng và gói cước được quản lý và gia hạn độc quyền bởi <strong>Super Admin Hệ Thống</strong>. Khi cần gia hạn thêm hoặc nâng cấp hạn mức, vui lòng liên hệ trực tiếp Ban Quản Trị Super Admin.
+                Thời hạn hợp đồng và gói cước được quản lý và gia hạn bởi <strong>Super Admin Hệ Thống</strong>. Khi gần hết hạn (dưới 7 ngày) hoặc cần nâng cấp hạn mức, người quản trị cơ sở vui lòng liên hệ Ban Quản Trị qua hotline <strong>1900 6868</strong> để được hỗ trợ gia hạn kịp thời, không gián đoạn dịch vụ.
               </p>
             </div>
           </div>

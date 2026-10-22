@@ -22,10 +22,13 @@ import {
   getDocs,
   updateDoc,
   deleteDoc,
+  deleteField,
   writeBatch,
   onSnapshot,
   query,
   where,
+  orderBy,
+  limit,
   serverTimestamp,
   Unsubscribe
 } from 'firebase/firestore';
@@ -49,6 +52,14 @@ import {
   AssignmentItem,
   AssignmentSubmission,
 } from '../data/mockData';
+export type {
+  CenterDocument,
+  ClassDocument,
+  AttendanceDocument,
+  StudentAttendanceEntry,
+  AssignmentDocument,
+  AssignmentSubmissionDocument,
+} from '../types/firestoreSchema';
 
 export type SystemRole = 'super_admin' | 'center_admin' | 'admin' | 'teacher' | 'teachers' | 'parent' | 'parents' | string;
 
@@ -249,8 +260,90 @@ export function onAuthStatusChange(callback: (user: User | null) => void): Unsub
 }
 
 // ============================================================================
-// 2. CÁC HÀM XỬ LÝ TRUNG TÂM (ROOT COLLECTION `/centers`)
+// 2. CÁC HÀM XỬ LÝ TRUNG TÂM (ROOT COLLECTION `/centers`) & MIGRATION NOSQL
 // ============================================================================
+
+const migratedCentersInSession = new Set<string>();
+
+/**
+ * Tự động chuẩn hóa Schema NoSQL:
+ * Chuyển đổi toàn bộ các trường mảng (`classes`, `assignments`, `attendance`) còn tồn đọng
+ * trong Document `/centers/{centerId}` sang các Subcollection tương ứng và xóa bỏ hoàn toàn
+ * các trường mảng khỏi Document trung tâm bằng `deleteField()` để tránh vượt giới hạn 1MB/doc.
+ */
+export async function migrateLegacyCenterArrays(centerId: string): Promise<void> {
+  const validCenterId = (centerId || '').trim();
+  if (!validCenterId || migratedCentersInSession.has(validCenterId)) return;
+  migratedCentersInSession.add(validCenterId);
+
+  try {
+    const centerDocRef = doc(db, 'centers', validCenterId);
+    const centerSnap = await getDoc(centerDocRef);
+    if (!centerSnap.exists()) return;
+
+    const data = centerSnap.data();
+    const hasLegacyClasses = Array.isArray(data?.classes);
+    const hasLegacyAssignments = Array.isArray(data?.assignments);
+    const hasLegacyAttendance = Array.isArray(data?.attendance);
+
+    if (!hasLegacyClasses && !hasLegacyAssignments && !hasLegacyAttendance) {
+      return;
+    }
+
+    const batch = writeBatch(db);
+    let opCount = 0;
+
+    // 1. Di trú mảng classes -> Subcollection /centers/{centerId}/classes/{classId}
+    if (hasLegacyClasses && data.classes.length > 0) {
+      for (const cls of data.classes) {
+        if (cls && cls.id && opCount < 450) {
+          const clsRef = doc(db, 'centers', validCenterId, 'classes', String(cls.id));
+          batch.set(clsRef, { ...cls, centerId: validCenterId }, { merge: true });
+          opCount++;
+        }
+      }
+    }
+
+    // 2. Di trú mảng assignments -> Subcollection /centers/{centerId}/assignments/{assignmentId}
+    if (hasLegacyAssignments && data.assignments.length > 0) {
+      for (const asg of data.assignments) {
+        if (asg && asg.id && opCount < 450) {
+          const asgRef = doc(db, 'centers', validCenterId, 'assignments', String(asg.id));
+          batch.set(asgRef, { ...asg, centerId: validCenterId }, { merge: true });
+          opCount++;
+        }
+      }
+    }
+
+    // 3. Di trú mảng attendance -> Subcollection /centers/{centerId}/attendance/{attendanceId}
+    if (hasLegacyAttendance && data.attendance.length > 0) {
+      for (const att of data.attendance) {
+        if (att && opCount < 450) {
+          const safeDate = String(att.date || att.sessionDate || '').replace(/[^0-9]/g, '');
+          const safeClass = String(att.classId || 'cls').replace(/[^0-9a-zA-Z_-]/g, '_');
+          const attId = att.id || `att_${safeClass}_${safeDate}`;
+          const attRef = doc(db, 'centers', validCenterId, 'attendance', String(attId));
+          batch.set(attRef, { ...att, id: attId, centerId: validCenterId }, { merge: true });
+          opCount++;
+        }
+      }
+    }
+
+    // 4. Loại bỏ triệt để các trường mảng khỏi Document trung tâm `/centers/{centerId}`
+    const fieldDeletions: Record<string, any> = {
+      updatedAt: serverTimestamp(),
+    };
+    if (hasLegacyClasses) fieldDeletions.classes = deleteField();
+    if (hasLegacyAssignments) fieldDeletions.assignments = deleteField();
+    if (hasLegacyAttendance) fieldDeletions.attendance = deleteField();
+
+    batch.update(centerDocRef, fieldDeletions);
+    await batch.commit();
+    console.log(`✓ [NoSQL Architect] Đã di trú dữ liệu sang Subcollection và xóa trường mảng dư thừa tại /centers/${validCenterId}`);
+  } catch (err: any) {
+    console.warn(`Lưu ý khi chuẩn hóa schema NoSQL cho trung tâm [${validCenterId}]:`, err?.message);
+  }
+}
 
 export function getRealtimeCenters(
   onUpdate: (centers: CenterItem[]) => void,
@@ -260,10 +353,26 @@ export function getRealtimeCenters(
   return onSnapshot(
     centersRef,
     (snapshot) => {
-      const items: CenterItem[] = snapshot.docs.map((docSnap) => ({
-        id: docSnap.id,
-        ...(docSnap.data() as Omit<CenterItem, 'id'>),
-      }));
+      const items: CenterItem[] = snapshot.docs.map((docSnap) => {
+        const rawData = docSnap.data() as any;
+
+        // Nếu phát hiện còn trường mảng cũ trong document center, tự động di trú sang subcollection và xóa mảng
+        if (
+          Array.isArray(rawData?.classes) ||
+          Array.isArray(rawData?.assignments) ||
+          Array.isArray(rawData?.attendance)
+        ) {
+          migrateLegacyCenterArrays(docSnap.id).catch(() => {});
+        }
+
+        // Loại bỏ hoàn toàn các trường mảng khỏi object CenterItem trong bộ nhớ
+        const { classes: _c, assignments: _asg, attendance: _att, ...cleanCenterMetadata } = rawData;
+
+        return {
+          id: docSnap.id,
+          ...(cleanCenterMetadata as Omit<CenterItem, 'id'>),
+        };
+      });
 
       onUpdate(items);
     },
@@ -1089,56 +1198,68 @@ export async function approveRenewalRequest(requestId: string, centerId: string,
 }
 
 // ============================================================================
-// 3. CÁC HÀM CRUD SUB-COLLECTIONS DƯỚI `/centers/{centerId}/`
+// 3. CÁC HÀM CRUD SUB-COLLECTIONS DƯỚI `/centers/{centerId}/` (CHUẨN NOSQL)
 // ============================================================================
+
+/**
+ * Thêm một lớp học mới trực tiếp vào Subcollection `/centers/{centerId}/classes/{classId}`
+ * (Không lưu vào mảng `classes` trong Document trung tâm để tránh giới hạn 1MB)
+ */
+export async function addClassToCenter(
+  centerId: string,
+  classData: Partial<ClassItem>
+): Promise<ClassItem> {
+  await ensureAuthSession();
+  const validCenterId = await resolveValidCenterId(centerId);
+  const classesSubColRef = collection(db, 'centers', validCenterId, 'classes');
+  const classDocRef = classData.id
+    ? doc(classesSubColRef, classData.id)
+    : doc(classesSubColRef);
+
+  const classId = classDocRef.id;
+  const nowIso = new Date().toISOString();
+
+  const newClassItem: ClassItem = {
+    id: classId,
+    centerId: validCenterId,
+    classCode: classData.classCode || `LOP-${Date.now().toString().slice(-4)}`,
+    name: classData.name || 'Lớp học mới',
+    subject: classData.subject || 'Toán',
+    teacherId: classData.teacherId || '',
+    teacherName: classData.teacherName || '',
+    teacherPhone: classData.teacherPhone || '',
+    room: classData.room || 'Phòng 101',
+    schedule: classData.schedule || 'Thứ 2, 4',
+    studentCount: Number(classData.studentCount) || 0,
+    maxCapacity: Number(classData.maxCapacity) || 25,
+    pricePerSession: classData.pricePerSession !== undefined ? Number(classData.pricePerSession) : 40000,
+    status: classData.status || 'active',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  // Ghi trực tiếp vào Subcollection `/centers/{validCenterId}/classes/{classId}`
+  await setDoc(classDocRef, {
+    ...newClassItem,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+
+  // Cập nhật bộ đệm cục bộ (localStorage) để phản hồi giao diện tức thì
+  try {
+    const raw = localStorage.getItem('tt_hocgioi_classes_' + validCenterId);
+    const cachedList: ClassItem[] = raw ? JSON.parse(raw) : [];
+    const updatedCache = [...cachedList.filter(c => c.id !== classId), newClassItem];
+    localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedCache));
+  } catch {}
+
+  return newClassItem;
+}
 
 export async function createClass(centerId: string = DEFAULT_CENTER_ID, classData: Partial<ClassItem>): Promise<string> {
   try {
-    await ensureAuthSession();
-    const validCenterId = await resolveValidCenterId(centerId);
-    const classId = classData.id || `class_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-
-    const newClassItem: ClassItem = {
-      id: classId,
-      centerId: validCenterId,
-      classCode: classData.classCode || `LOP-${Date.now().toString().slice(-4)}`,
-      name: classData.name || 'Lớp học mới',
-      subject: classData.subject || 'Toán',
-      teacherId: classData.teacherId || '',
-      teacherName: classData.teacherName || '',
-      teacherPhone: classData.teacherPhone || '',
-      room: classData.room || 'Phòng 101',
-      schedule: classData.schedule || 'Thứ 2, 4',
-      studentCount: Number(classData.studentCount) || 0,
-      maxCapacity: Number(classData.maxCapacity) || 25,
-      pricePerSession: classData.pricePerSession !== undefined ? Number(classData.pricePerSession) : 40000,
-      status: classData.status || 'active',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    // 1. Lưu trực tiếp vào Center document
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    let classesList: ClassItem[] = [];
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.classes)) {
-      classesList = centerSnap.data()?.classes;
-    }
-    const updatedClasses = [...classesList.filter(c => c.id !== classId), newClassItem];
-    await setDoc(centerDocRef, { classes: updatedClasses }, { merge: true });
-
-    // 2. Cập nhật cache localStorage
-    try {
-      localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedClasses));
-    } catch {}
-
-    // 3. Dự phòng subcollection nếu được phân quyền
-    try {
-      const classesRef = doc(db, 'centers', validCenterId, 'classes', classId);
-      await setDoc(classesRef, newClassItem, { merge: true });
-    } catch {}
-
-    return classId;
+    const created = await addClassToCenter(centerId, classData);
+    return created.id;
   } catch (error: any) {
     throw new Error(`Không thể tạo lớp học: ${error.message}`);
   }
@@ -1148,24 +1269,30 @@ export async function updateClass(centerId: string = DEFAULT_CENTER_ID, classId:
   try {
     await ensureAuthSession('admin');
     const validCenterId = await resolveValidCenterId(centerId);
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.classes)) {
-      const updatedClasses = centerSnap.data()?.classes.map((c: ClassItem) => {
-        if (c.id === classId) {
-          return { ...c, ...data, updatedAt: new Date().toISOString() };
-        }
-        return c;
-      });
-      await setDoc(centerDocRef, { classes: updatedClasses }, { merge: true });
-      try {
-        localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedClasses));
-      } catch {}
-    }
 
+    // Cập nhật trực tiếp Document trong Subcollection `/centers/{validCenterId}/classes/{classId}`
+    const classDocRef = doc(db, 'centers', validCenterId, 'classes', classId);
+    await setDoc(
+      classDocRef,
+      {
+        ...data,
+        id: classId,
+        centerId: validCenterId,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // Cập nhật bộ đệm localStorage
     try {
-      const classDocRef = doc(db, 'centers', validCenterId, 'classes', classId);
-      await updateDoc(classDocRef, { ...data, updatedAt: serverTimestamp() });
+      const raw = localStorage.getItem('tt_hocgioi_classes_' + validCenterId);
+      if (raw) {
+        const cachedList: ClassItem[] = JSON.parse(raw);
+        const updatedCache = cachedList.map((c) =>
+          c.id === classId ? { ...c, ...data, updatedAt: new Date().toISOString() } : c
+        );
+        localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedCache));
+      }
     } catch {}
   } catch (error: any) {
     throw new Error(`Không thể cập nhật lớp học: ${error.message}`);
@@ -1176,19 +1303,19 @@ export async function deleteClass(centerId: string = DEFAULT_CENTER_ID, classId:
   try {
     await ensureAuthSession('admin');
     const validCenterId = await resolveValidCenterId(centerId);
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.classes)) {
-      const updatedClasses = centerSnap.data()?.classes.filter((c: ClassItem) => c.id !== classId);
-      await setDoc(centerDocRef, { classes: updatedClasses }, { merge: true });
-      try {
-        localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedClasses));
-      } catch {}
-    }
 
+    // Xóa trực tiếp Document trong Subcollection `/centers/{validCenterId}/classes/{classId}`
+    const classDocRef = doc(db, 'centers', validCenterId, 'classes', classId);
+    await deleteDoc(classDocRef);
+
+    // Đồng bộ bộ đệm localStorage
     try {
-      const classDocRef = doc(db, 'centers', validCenterId, 'classes', classId);
-      await deleteDoc(classDocRef);
+      const raw = localStorage.getItem('tt_hocgioi_classes_' + validCenterId);
+      if (raw) {
+        const cachedList: ClassItem[] = JSON.parse(raw);
+        const updatedCache = cachedList.filter((c) => c.id !== classId);
+        localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedCache));
+      }
     } catch {}
   } catch (error: any) {
     throw new Error(`Không thể xóa lớp học: ${error.message}`);
@@ -1627,12 +1754,40 @@ export async function syncTeacherMultipleClassesLink(
   const validCenterId = await resolveValidCenterId(centerId);
   if (!validCenterId) return;
 
+  // 1. Cập nhật từng Document trong Subcollection `/centers/{validCenterId}/classes/{clsId}`
+  for (const cId of newClassIds) {
+    try {
+      const clsRef = doc(db, 'centers', validCenterId, 'classes', cId);
+      await setDoc(clsRef, {
+        teacherId: teacherId,
+        teacherName: teacherName || 'Giáo viên',
+        ...(teacherPhone ? { teacherPhone } : {}),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    } catch {}
+  }
+
+  // 2. Gỡ phân công cho các lớp đã bị bỏ chọn
+  const removedIds = prevClassIds.filter((id) => !newClassIds.includes(id));
+  for (const rId of removedIds) {
+    try {
+      const clsRef = doc(db, 'centers', validCenterId, 'classes', rId);
+      const snap = await getDoc(clsRef);
+      if (snap.exists() && snap.data()?.teacherId === teacherId) {
+        await setDoc(clsRef, {
+          teacherId: '',
+          teacherName: 'Chưa phân công',
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+    } catch {}
+  }
+
+  // 3. Đồng bộ bộ đệm localStorage
   try {
-    // 1. Cập nhật trong Center document (classes array)
-    const centerDocRef = doc(db, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.classes)) {
-      const classesList = centerSnap.data()?.classes;
+    const raw = localStorage.getItem('tt_hocgioi_classes_' + validCenterId);
+    if (raw) {
+      const classesList: ClassItem[] = JSON.parse(raw);
       const updatedClasses = classesList.map((c: any) => {
         if (newClassIds.includes(c.id)) {
           return {
@@ -1652,43 +1807,9 @@ export async function syncTeacherMultipleClassesLink(
         }
         return c;
       });
-      await setDoc(centerDocRef, { classes: updatedClasses }, { merge: true });
-      try {
-        localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedClasses));
-      } catch {}
+      localStorage.setItem('tt_hocgioi_classes_' + validCenterId, JSON.stringify(updatedClasses));
     }
-  } catch (err: any) {
-    console.warn('Lỗi đồng bộ classes array trong center doc:', err.message);
-  }
-
-  // 2. Cập nhật từng subcollection doc trong `centers/{validCenterId}/classes/{clsId}`
-  for (const cId of newClassIds) {
-    try {
-      const clsRef = doc(db, 'centers', validCenterId, 'classes', cId);
-      await setDoc(clsRef, {
-        teacherId: teacherId,
-        teacherName: teacherName || 'Giáo viên',
-        ...(teacherPhone ? { teacherPhone } : {}),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-    } catch {}
-  }
-
-  // Gỡ cho các lớp đã bị bỏ chọn
-  const removedIds = prevClassIds.filter((id) => !newClassIds.includes(id));
-  for (const rId of removedIds) {
-    try {
-      const clsRef = doc(db, 'centers', validCenterId, 'classes', rId);
-      const snap = await getDoc(clsRef);
-      if (snap.exists() && snap.data()?.teacherId === teacherId) {
-        await setDoc(clsRef, {
-          teacherId: '',
-          teacherName: 'Chưa phân công',
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      }
-    } catch {}
-  }
+  } catch {}
 }
 
 export async function createTeacher(
@@ -1846,10 +1967,12 @@ function mapDocToClassItem(docSnap: any, targetCenterId: string): ClassItem {
     subject: data.subject || 'Môn học',
     teacherId: data.teacherId || '',
     teacherName: data.teacherName || 'Chưa phân công',
+    teacherPhone: data.teacherPhone || '',
     room: data.room || 'Phòng học',
     schedule: data.schedule || 'Lịch linh hoạt',
     studentCount: Number(data.studentCount) || 0,
     maxCapacity: Number(data.maxCapacity) || 25,
+    pricePerSession: data.pricePerSession !== undefined ? Number(data.pricePerSession) : 40000,
     status: data.status || 'active',
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
@@ -1862,7 +1985,7 @@ export function getRealtimeClasses(
   onError?: (error: Error) => void
 ): Unsubscribe {
   let isCancelled = false;
-  let unsubCenter: Unsubscribe = () => {};
+  let unsubSubClasses: Unsubscribe = () => {};
 
   const startListener = async () => {
     let targetCenterId = (centerId || '').trim();
@@ -1874,7 +1997,7 @@ export function getRealtimeClasses(
       return;
     }
 
-    // 1. Nạp cache tức thời từ localStorage
+    // 1. Nạp cache tức thời từ localStorage để tối ưu tốc độ hiển thị
     try {
       const raw = localStorage.getItem('tt_hocgioi_classes_' + targetCenterId);
       if (raw) {
@@ -1885,21 +2008,23 @@ export function getRealtimeClasses(
       }
     } catch {}
 
-    // 2. Lắng nghe realtime từ Center Document
-    const centerDocRef = doc(db, 'centers', targetCenterId);
-    unsubCenter = onSnapshot(
-      centerDocRef,
+    // 2. Tự động di trú nếu còn mảng classes cũ trong Center Document
+    await migrateLegacyCenterArrays(targetCenterId);
+    if (isCancelled) return;
+
+    // 3. Lắng nghe realtime trực tiếp từ Subcollection `/centers/{targetCenterId}/classes`
+    const classesSubRef = collection(db, 'centers', targetCenterId, 'classes');
+    unsubSubClasses = onSnapshot(
+      classesSubRef,
       (snapshot) => {
         if (isCancelled) return;
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          if (Array.isArray(data?.classes)) {
-            onUpdate(data.classes);
-            try {
-              localStorage.setItem('tt_hocgioi_classes_' + targetCenterId, JSON.stringify(data.classes));
-            } catch {}
-          }
-        }
+        const classesList: ClassItem[] = snapshot.docs.map((docSnap) =>
+          mapDocToClassItem(docSnap, targetCenterId)
+        );
+        onUpdate(classesList);
+        try {
+          localStorage.setItem('tt_hocgioi_classes_' + targetCenterId, JSON.stringify(classesList));
+        } catch {}
       },
       (err) => {
         if (onError) onError(err);
@@ -1911,7 +2036,7 @@ export function getRealtimeClasses(
 
   return () => {
     isCancelled = true;
-    unsubCenter();
+    unsubSubClasses();
   };
 }
 
@@ -2136,7 +2261,15 @@ export function getRealtimeTeachers(
         );
       } catch {}
 
-      // 4. LẮNG NGHE CENTER DOCUMENT: `centers/{targetCenterId}` (mảng teachers & classes)
+      // 4. LẮNG NGHE CENTER DOCUMENT: `centers/{targetCenterId}` (chỉ cho teachers dự phòng)
+      try {
+        const rawClasses = localStorage.getItem('tt_hocgioi_classes_' + targetCenterId);
+        if (rawClasses) {
+          const parsedClasses = JSON.parse(rawClasses);
+          if (Array.isArray(parsedClasses)) centerClasses = parsedClasses;
+        }
+      } catch {}
+
       try {
         const centerDocRef = doc(db, 'centers', targetCenterId);
         unsubCenterDoc = onSnapshot(
@@ -2152,10 +2285,6 @@ export function getRealtimeTeachers(
                     centerDocTeachers.push(mapDocToTeacherItem(t, targetCenterId));
                   }
                 });
-              }
-
-              if (Array.isArray(data?.classes)) {
-                centerClasses = data.classes;
               }
 
               rebuildAndEmit();
@@ -2691,41 +2820,16 @@ export function getRealtimeAssignments(
   onUpdate: (assignments: AssignmentItem[]) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
-  let unsubCenter: Unsubscribe = () => {};
   let unsubSubAsg: Unsubscribe = () => {};
   let isCancelled = false;
   let activeCenterKey = '';
-  let centerArrayAsgs: AssignmentItem[] = [];
   const subColAsgsMap = new Map<string, AssignmentItem>();
 
   const emitMergedAssignments = () => {
     if (isCancelled || !activeCenterKey) return;
     const overlay = getLocalSubmissionsOverlay(activeCenterKey);
-    const mergedMap = new Map<string, AssignmentItem>();
 
-    centerArrayAsgs.forEach((a) => {
-      if (a && a.id) mergedMap.set(a.id, { ...a });
-    });
-
-    subColAsgsMap.forEach((subAsg, id) => {
-      const existing = mergedMap.get(id);
-      if (existing) {
-        const existingSubs = Array.isArray(existing.submissions) ? existing.submissions : [];
-        const subColSubs = Array.isArray(subAsg.submissions) ? subAsg.submissions : [];
-        const subMap = new Map<string, AssignmentSubmission>();
-        existingSubs.forEach((s) => subMap.set(s.studentId || s.id, s));
-        subColSubs.forEach((s) => subMap.set(s.studentId || s.id, s));
-        mergedMap.set(id, {
-          ...existing,
-          ...subAsg,
-          submissions: Array.from(subMap.values()),
-        });
-      } else {
-        mergedMap.set(id, { ...subAsg });
-      }
-    });
-
-    const finalList = Array.from(mergedMap.values()).map((asg) => {
+    const finalList = Array.from(subColAsgsMap.values()).map((asg) => {
       const localSubs = overlay[asg.id];
       if (Array.isArray(localSubs) && localSubs.length > 0) {
         const currentSubs = Array.isArray(asg.submissions) ? asg.submissions : [];
@@ -2765,24 +2869,11 @@ export function getRealtimeAssignments(
     }
     assignmentListenerCallbacks.get(activeCenterKey)!.add(emitMergedAssignments);
 
-    const centerDocRef = doc(db, 'centers', targetCenterId);
-    unsubCenter = onSnapshot(
-      centerDocRef,
-      (snapshot) => {
-        if (isCancelled) return;
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          centerArrayAsgs = Array.isArray(data?.assignments) ? data.assignments : [];
-        } else {
-          centerArrayAsgs = [];
-        }
-        emitMergedAssignments();
-      },
-      (err) => {
-        if (onError) onError(err);
-      }
-    );
+    // Tự động di trú dữ liệu mảng cũ (nếu còn) sang Subcollection `/centers/{targetCenterId}/assignments`
+    await migrateLegacyCenterArrays(targetCenterId);
+    if (isCancelled) return;
 
+    // Lắng nghe duy nhất từ Subcollection `/centers/{targetCenterId}/assignments`
     try {
       const subAsgRef = collection(db, 'centers', targetCenterId, 'assignments');
       unsubSubAsg = onSnapshot(
@@ -2798,9 +2889,13 @@ export function getRealtimeAssignments(
           });
           emitMergedAssignments();
         },
-        () => {}
+        (err) => {
+          if (onError) onError(err);
+        }
       );
-    } catch {}
+    } catch (err: any) {
+      if (onError) onError(err);
+    }
   };
 
   startListener();
@@ -2810,9 +2905,54 @@ export function getRealtimeAssignments(
     if (activeCenterKey && assignmentListenerCallbacks.has(activeCenterKey)) {
       assignmentListenerCallbacks.get(activeCenterKey)!.delete(emitMergedAssignments);
     }
-    unsubCenter();
     unsubSubAsg();
   };
+}
+
+/**
+ * Truy vấn danh sách điểm danh (`attendance`) của một lớp học cụ thể
+ * từ Subcollection `/centers/{centerId}/attendance` theo chuẩn Firebase Web SDK v9/v10.
+ */
+export async function getClassAttendance(
+  centerId: string,
+  classId: string,
+  options?: { startDate?: string; endDate?: string }
+): Promise<any[]> {
+  if (!centerId || !classId) return [];
+
+  try {
+    await ensureAuthSession();
+    const validCenterId = await resolveValidCenterId(centerId);
+    if (!validCenterId) return [];
+
+    // Đảm bảo dữ liệu cũ (nếu còn) đã được chuẩn hóa sang Subcollection
+    await migrateLegacyCenterArrays(validCenterId);
+
+    const attendanceSubColRef = collection(db, 'centers', validCenterId, 'attendance');
+    const classAttendanceQuery = query(
+      attendanceSubColRef,
+      where('classId', '==', classId)
+    );
+
+    const querySnapshot = await getDocs(classAttendanceQuery);
+    let records = querySnapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    })) as any[];
+
+    if (options?.startDate) {
+      records = records.filter((r) => String(r.date || '') >= options.startDate!);
+    }
+    if (options?.endDate) {
+      records = records.filter((r) => String(r.date || '') <= options.endDate!);
+    }
+
+    records.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    return records;
+  } catch (error: any) {
+    console.error(`Lỗi khi truy vấn điểm danh của lớp [${classId}]:`, error);
+    throw new Error(`Không thể lấy danh sách điểm danh của lớp: ${error.message}`);
+  }
 }
 
 export function getRealtimeAttendance(
@@ -2820,7 +2960,6 @@ export function getRealtimeAttendance(
   onUpdate: (records: any[]) => void,
   onError?: (error: any) => void
 ): () => void {
-  // Kiểm tra chặt chẽ điều kiện if (!centerId) return;
   if (!centerId) {
     onUpdate([]);
     return () => {};
@@ -2828,14 +2967,12 @@ export function getRealtimeAttendance(
 
   let isCancelled = false;
   let unsubSub = () => {};
-  let unsubCenter = () => {};
-
-  const mergedMap = new Map<string, any>();
+  const subAttendanceMap = new Map<string, any>();
 
   const notifyUpdate = () => {
     if (isCancelled) return;
-    const records = Array.from(mergedMap.values());
-    records.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const records = Array.from(subAttendanceMap.values());
+    records.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
     onUpdate(records);
   };
 
@@ -2844,18 +2981,22 @@ export function getRealtimeAttendance(
       const validCenterId = await resolveValidCenterId(centerId);
       if (isCancelled || !validCenterId) return;
 
-      // Chuẩn hóa Multi-Tenant: CHỈ LẮNG NGHE Sub-collection `/centers/{validCenterId}/attendance`
-      // Loại bỏ hoàn toàn lắng nghe ở Root collection /attendance
+      // Tự động di trú nếu còn trường mảng attendance cũ trong Center Document
+      await migrateLegacyCenterArrays(validCenterId);
+      if (isCancelled) return;
+
+      // CHỈ LẮNG NGHE Subcollection `/centers/{validCenterId}/attendance`
       try {
         const subCollRef = collection(db, 'centers', validCenterId, 'attendance');
         unsubSub = onSnapshot(
           subCollRef,
           (snap) => {
             if (isCancelled) return;
+            subAttendanceMap.clear();
             snap.docs.forEach((d) => {
               const data = d.data();
               const key = data.id || `${data.classId}_${data.date}` || d.id;
-              mergedMap.set(key, { id: d.id, ...data });
+              subAttendanceMap.set(key, { id: d.id, ...data });
             });
             notifyUpdate();
           },
@@ -2868,31 +3009,6 @@ export function getRealtimeAttendance(
         console.warn('Lỗi kết nối sub attendance:', subErr);
         if (onError) onError(subErr);
       }
-
-      // Lắng nghe mảng attendance trong Center Document nếu có
-      try {
-        const centerRef = doc(db, 'centers', validCenterId);
-        unsubCenter = onSnapshot(
-          centerRef,
-          (cSnap) => {
-            if (isCancelled) return;
-            if (cSnap.exists() && Array.isArray(cSnap.data()?.attendance)) {
-              cSnap.data()?.attendance.forEach((item: any) => {
-                if (item) {
-                  const key = item.id || `${item.classId}_${item.date}`;
-                  if (!mergedMap.has(key)) {
-                    mergedMap.set(key, item);
-                  }
-                }
-              });
-              notifyUpdate();
-            }
-          },
-          (err) => {
-            console.warn('Center doc attendance listen warning:', err?.message);
-          }
-        );
-      } catch {}
     } catch (e) {
       if (onError) onError(e);
     }
@@ -2900,11 +3016,9 @@ export function getRealtimeAttendance(
 
   startListener();
 
-  // Dọn dẹp listener (unsubscribe) khi component unmount
   return () => {
     isCancelled = true;
     unsubSub();
-    unsubCenter();
   };
 }
 
@@ -2913,7 +3027,6 @@ export async function saveDailyAttendance(
   attendanceData: any,
   role: SystemRole = 'teacher'
 ): Promise<string> {
-  // Kiểm tra chặt chẽ điều kiện if (!centerId) return;
   if (!centerId) {
     console.warn('saveDailyAttendance: Thiếu centerId hợp lệ.');
     return '';
@@ -2946,33 +3059,10 @@ export async function saveDailyAttendance(
       createdAt: attendanceData.createdAt || new Date().toISOString(),
     };
 
-    // ĐỒNG BỘ ĐƯỜNG DẪN MULTI-TENANT:
-    // Toàn bộ dữ liệu điểm danh chỉ lưu trữ tại sub-collection của trung tâm hiện tại:
-    // doc(db, 'centers', currentCenterId, 'attendance', recordId)
-    // Loại bỏ hoàn toàn việc ghi bản ghi điểm danh ra Root collection /attendance
+    // CHUẨN HÓA NOSQL: Chỉ lưu vào Subcollection `/centers/{validCenterId}/attendance/{recordId}`
+    // TUYỆT ĐỐI KHÔNG ghi vào mảng `attendance` trong Document `/centers/{validCenterId}`
     const attRef = doc(db, 'centers', validCenterId, 'attendance', recordId);
     await setDoc(attRef, newRecord, { merge: true });
-
-    // Đồng bộ thêm vào mảng attendance trong Center Document để đồng bộ nhanh
-    try {
-      const centerDocRef = doc(db, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      let attList: any[] = [];
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.attendance)) {
-        attList = [...centerSnap.data()?.attendance];
-      }
-      const existingIdx = attList.findIndex(
-        (a) => a && (a.id === recordId || a.id === stdDocId || (a.classId === newRecord.classId && a.date === newRecord.date))
-      );
-      if (existingIdx >= 0) {
-        attList[existingIdx] = { ...attList[existingIdx], ...newRecord };
-      } else {
-        attList.push(newRecord);
-      }
-      await setDoc(centerDocRef, { attendance: attList }, { merge: true });
-    } catch (cErr: any) {
-      console.warn('Ghi center document attendance array lưu ý:', cErr?.message);
-    }
 
     return recordId;
   } catch (error: any) {
@@ -3175,8 +3265,9 @@ export async function createAssignment(
     await ensureAuthSession(role);
     const validCenterId = await resolveValidCenterId(centerId);
     const asgId = data.id || `asg_${Date.now()}`;
-    const newAsg: AssignmentItem = {
+    const newAsg: AssignmentItem & { centerId: string } = {
       id: asgId,
+      centerId: validCenterId,
       title: data.title || 'Bài tập mới',
       subject: data.subject || 'Toán',
       dueDate: data.dueDate || new Date().toISOString().split('T')[0],
@@ -3203,20 +3294,19 @@ export async function createAssignment(
       submissions: Array.isArray(data.submissions) ? data.submissions : [],
     };
 
+    // CHUẨN HÓA NOSQL: Ghi trực tiếp vào Subcollection `/centers/{validCenterId}/assignments/{asgId}`
+    // TUYỆT ĐỐI KHÔNG ghi vào mảng `assignments` trong Document `/centers/{validCenterId}`
     const writeToDb = async (targetDb: typeof db) => {
-      const centerDocRef = doc(targetDb, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      let asgList: AssignmentItem[] = [];
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.assignments)) {
-        asgList = centerSnap.data()?.assignments;
-      }
-      const updatedAsg = [...asgList.filter((a) => a.id !== asgId), newAsg];
-      await setDoc(centerDocRef, { assignments: updatedAsg }, { merge: true });
-
-      try {
-        const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', asgId);
-        await setDoc(asgDocRef, newAsg, { merge: true });
-      } catch {}
+      const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', asgId);
+      await setDoc(
+        asgDocRef,
+        {
+          ...newAsg,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
     };
 
     try {
@@ -3258,22 +3348,17 @@ export async function updateAssignment(
     const validCenterId = await resolveValidCenterId(centerId);
 
     const writeToDb = async (targetDb: typeof db) => {
-      const centerDocRef = doc(targetDb, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.assignments)) {
-        const updatedAsg = centerSnap.data()?.assignments.map((a: AssignmentItem) => {
-          if (a.id === assignmentId) {
-            return { ...a, ...data };
-          }
-          return a;
-        });
-        await setDoc(centerDocRef, { assignments: updatedAsg }, { merge: true });
-      }
-
-      try {
-        const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
-        await setDoc(asgDocRef, { ...data, updatedAt: serverTimestamp() }, { merge: true });
-      } catch {}
+      const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
+      await setDoc(
+        asgDocRef,
+        {
+          ...data,
+          id: assignmentId,
+          centerId: validCenterId,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
     };
 
     try {
@@ -3316,18 +3401,18 @@ export async function deleteAssignment(
     clearLocalSubmissionOverlayForAssignment(validCenterId, assignmentId);
 
     const deleteFromDb = async (targetDb: typeof db) => {
+      // Dọn dẹp subcollection submissions bên trong bài tập nếu có
       try {
-        const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
-        await deleteDoc(asgDocRef);
+        const subsSnap = await getDocs(
+          collection(targetDb, 'centers', validCenterId, 'assignments', assignmentId, 'submissions')
+        );
+        for (const sDoc of subsSnap.docs) {
+          await deleteDoc(sDoc.ref).catch(() => {});
+        }
       } catch {}
 
-      const centerDocRef = doc(targetDb, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.assignments)) {
-        const currentList: AssignmentItem[] = centerSnap.data()?.assignments;
-        const updatedList = currentList.filter((a) => a.id !== assignmentId);
-        await setDoc(centerDocRef, { assignments: updatedList }, { merge: true });
-      }
+      const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
+      await deleteDoc(asgDocRef);
     };
 
     try {
@@ -3372,45 +3457,27 @@ export async function reassignHomework(
     }
 
     const writeToDb = async (targetDb: typeof db) => {
-      const centerDocRef = doc(targetDb, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
+      const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
+      const asgSnap = await getDoc(asgDocRef);
+      const prevComment = asgSnap.exists() ? asgSnap.data()?.comment || '' : '';
 
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.assignments)) {
-        const assignmentsList: AssignmentItem[] = centerSnap.data()?.assignments;
-        const updatedList = assignmentsList.map((a) => {
-          if (a.id === assignmentId) {
-            const updated: AssignmentItem = {
-              ...a,
-              dueDate: options.newDueDate || a.dueDate,
-              status: 'working',
-              comment:
-                options.note && options.note.trim()
-                  ? `${a.comment ? a.comment + '\n' : ''}[Giao lại]: ${options.note.trim()}`
-                  : a.comment,
-              submissions: options.resetSubmissions ? [] : a.submissions || [],
-            };
-            return updated;
-          }
-          return a;
-        });
-        await setDoc(centerDocRef, { assignments: updatedList }, { merge: true });
-      }
-
-      try {
-        const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
-        await setDoc(
-          asgDocRef,
-          {
-            dueDate: options.newDueDate,
-            status: 'working',
-            ...(options.note ? { reassignNote: options.note.trim() } : {}),
-            ...(options.resetSubmissions ? { submissions: [] } : {}),
-            reassignedAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      } catch {}
+      await setDoc(
+        asgDocRef,
+        {
+          dueDate: options.newDueDate,
+          status: 'working',
+          ...(options.note && options.note.trim()
+            ? {
+                reassignNote: options.note.trim(),
+                comment: `${prevComment ? prevComment + '\n' : ''}[Giao lại]: ${options.note.trim()}`,
+              }
+            : {}),
+          ...(options.resetSubmissions ? { submissions: [] } : {}),
+          reassignedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
     };
 
     try {
@@ -3456,61 +3523,30 @@ export async function submitGrade(
     const validCenterId = await resolveValidCenterId(centerId);
 
     const writeToDb = async (targetDb: typeof db) => {
-      const centerDocRef = doc(targetDb, 'centers', validCenterId);
-      const centerSnap = await getDoc(centerDocRef);
-      if (centerSnap.exists() && Array.isArray(centerSnap.data()?.assignments)) {
-        const updatedAsg = centerSnap.data()?.assignments.map((a: AssignmentItem) => {
-          if (a.id === assignmentId) {
-            const existingSubs = Array.isArray(a.submissions) ? a.submissions : [];
-            const updatedSubs = existingSubs.map((sub) => {
-              if (sub.studentId === studentId) {
-                return {
-                  ...sub,
-                  score,
-                  feedback,
-                  ...(teacherCorrectedFileUrl ? { teacherCorrectedFileUrl, teacherCorrectedFileName } : {}),
-                };
-              }
-              return sub;
-            });
+      const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
+      const asgSnap = await getDoc(asgDocRef);
+      if (asgSnap.exists()) {
+        const currentSubs = Array.isArray(asgSnap.data()?.submissions) ? asgSnap.data()?.submissions : [];
+        const updatedSubs = currentSubs.map((sub: any) => {
+          if (sub.studentId === studentId) {
             return {
-              ...a,
+              ...sub,
+              status: 'graded',
               score,
               feedback,
-              status: 'graded' as const,
-              submissions: updatedSubs,
+              ...(teacherCorrectedFileUrl ? { teacherCorrectedFileUrl, teacherCorrectedFileName } : {}),
             };
           }
-          return a;
+          return sub;
         });
-        await setDoc(centerDocRef, { assignments: updatedAsg }, { merge: true });
+        await updateDoc(asgDocRef, {
+          score: score,
+          feedback: feedback,
+          status: 'graded',
+          submissions: updatedSubs,
+          updatedAt: serverTimestamp(),
+        });
       }
-
-      try {
-        const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
-        const asgSnap = await getDoc(asgDocRef);
-        if (asgSnap.exists()) {
-          const currentSubs = Array.isArray(asgSnap.data()?.submissions) ? asgSnap.data()?.submissions : [];
-          const updatedSubs = currentSubs.map((sub: any) => {
-            if (sub.studentId === studentId) {
-              return {
-                ...sub,
-                score,
-                feedback,
-                ...(teacherCorrectedFileUrl ? { teacherCorrectedFileUrl, teacherCorrectedFileName } : {}),
-              };
-            }
-            return sub;
-          });
-          await updateDoc(asgDocRef, {
-            score: score,
-            feedback: feedback,
-            status: 'graded',
-            submissions: updatedSubs,
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } catch {}
     };
 
     try {
@@ -3668,11 +3704,10 @@ export async function uploadSubmissionFileToStorage(
 /**
  * Phụ huynh nộp bài tập / gửi tài liệu cho giáo viên:
  * 1. Upload file vào Firebase Storage (theo đường dẫn phân cấp chuẩn)
- * 2. Lưu trạng thái nộp bài và metadata vào Firestore:
- *    - Cập nhật mảng assignments tại doc(`/centers/${centerId}`)
+ * 2. Lưu trạng thái nộp bài và metadata vào Firestore Subcollection:
  *    - Cập nhật doc(`/centers/${centerId}/assignments/${assignmentId}`)
  *    - Ghi bản ghi vào subcollection `/centers/${centerId}/assignments/${assignmentId}/submissions/${subId}`
- *    - Tự động chuyển sang phiên đồng bộ SecondaryDb nếu tài khoản Phụ huynh bị giới hạn quyền ghi trực tiếp
+ *    - TUYỆT ĐỐI KHÔNG ghi vào mảng `assignments` tại doc(`/centers/${centerId}`)
  */
 export async function submitStudentHomework(
   centerId: string = DEFAULT_CENTER_ID,
@@ -3755,13 +3790,13 @@ export async function submitStudentHomework(
     status: 'submitted',
   };
 
-  // Lưu ngay vào bộ đệm cục bộ để giao diện cập nhật tức thì và không bao giờ mất bài nộp
+  // Lưu ngay vào bộ đệm cục bộ để giao diện cập nhật tức thì
   saveLocalSubmissionOverlay(validCenterId, assignmentId, newSubmission);
 
   const persistSubmissionToFirestore = async (targetDb: typeof db) => {
     let wroteAny = false;
 
-    // A. Cập nhật trong subcollection /centers/${validCenterId}/assignments/${assignmentId}
+    // A. Cập nhật trong Subcollection `/centers/${validCenterId}/assignments/${assignmentId}`
     try {
       const asgDocRef = doc(targetDb, 'centers', validCenterId, 'assignments', assignmentId);
       const asgSnap = await getDoc(asgDocRef);
@@ -3774,6 +3809,7 @@ export async function submitStudentHomework(
         asgDocRef,
         {
           id: assignmentId,
+          centerId: validCenterId,
           status: 'completed',
           submissions: [newSubmission, ...filteredSubs],
           updatedAt: serverTimestamp(),
@@ -3783,7 +3819,7 @@ export async function submitStudentHomework(
       wroteAny = true;
     } catch {}
 
-    // B. Lưu bản ghi độc lập vào subcollection submissions
+    // B. Lưu bản ghi độc lập vào Subcollection `/centers/${validCenterId}/assignments/${assignmentId}/submissions/${subId}`
     try {
       const subDocRef = doc(
         targetDb,
@@ -3794,30 +3830,9 @@ export async function submitStudentHomework(
         'submissions',
         subId
       );
-      await setDoc(subDocRef, newSubmission, { merge: true });
+      await setDoc(subDocRef, { ...newSubmission, centerId: validCenterId }, { merge: true });
       wroteAny = true;
     } catch {}
-
-    // C. Cập nhật mảng assignments trong doc center
-    const centerDocRef = doc(targetDb, 'centers', validCenterId);
-    const centerSnap = await getDoc(centerDocRef);
-    if (centerSnap.exists() && Array.isArray(centerSnap.data()?.assignments)) {
-      const assignmentsList: AssignmentItem[] = centerSnap.data()?.assignments;
-      const updatedAssignments = assignmentsList.map((asg) => {
-        if (asg.id === assignmentId) {
-          const existingSubs = Array.isArray(asg.submissions) ? asg.submissions : [];
-          const filteredSubs = existingSubs.filter((s) => s.studentId !== studentId);
-          return {
-            ...asg,
-            status: 'completed' as const,
-            submissions: [newSubmission, ...filteredSubs],
-          };
-        }
-        return asg;
-      });
-      await setDoc(centerDocRef, { assignments: updatedAssignments }, { merge: true });
-      wroteAny = true;
-    }
 
     if (!wroteAny) {
       throw new Error('Permission fallback needed');
