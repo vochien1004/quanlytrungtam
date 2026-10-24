@@ -38,6 +38,9 @@ export interface Center {
   centerId: string;
   code: string;
   name: string;
+  username?: string;
+  realEmail?: string;
+  authEmail?: string;
   address?: string;
   phone?: string;
   email?: string;
@@ -112,6 +115,47 @@ export interface Teacher {
 }
 
 export type TeacherDocument = Teacher;
+
+/**
+ * 1.3. SUBCOLLECTION NGƯỜI DÙNG (MULTI-TENANT): `/centers/{centerId}/users/{uid}`
+ * Lưu trữ thông tin chi tiết (Hồ sơ, chức vụ, trạng thái, username) của người dùng trong từng trung tâm,
+ * kết hợp với định danh cốt lõi trên Firebase Authentication thông qua cơ chế Fake Email:
+ * `fakeEmail = ${username}@${centerId}.app.com` hoặc `authEmail = ${username}@tenant.system.local`
+ */
+export type UserProfileRole = 'super_admin' | 'center_admin' | 'teacher' | 'student' | 'parent' | 'staff';
+export type UserProfileStatus = 'active' | 'inactive' | 'locked' | 'suspended';
+
+export interface UserProfile {
+  uid: string;                  // Khớp 1-1 với Firebase Auth UID
+  centerId: string;             // ID Trung tâm trực thuộc (Multi-tenant)
+  username: string;             // Tên đăng nhập của người dùng (dùng tạo fakeEmail)
+  email: string;                // Email ảo trên Firebase Auth hoặc email liên hệ
+  realEmail?: string;           // Email liên hệ thực tế (tùy chọn)
+  authEmail?: string;           // Email định danh trên Firebase Auth (${username}@tenant.system.local)
+  fullName: string;             // Họ và tên đầy đủ
+  displayName?: string;         // Tên hiển thị
+  role: UserProfileRole;        // Chức vụ / Vai trò trong trung tâm
+  position?: string;            // Chức danh chi tiết (VD: "Giáo viên Toán", "Quản lý học vụ")
+  status: UserProfileStatus;    // Trạng thái hoạt động ('active' | 'inactive' | 'locked' | 'suspended')
+  phone?: string;               // Số điện thoại liên hệ
+  avatar?: string;              // Ảnh đại diện
+  address?: string;             // Địa chỉ
+  // Mở rộng theo vai trò (Giáo viên / Học sinh / Phụ huynh)
+  teacherCode?: string;
+  subject?: string;
+  mainClassId?: string;
+  mainClassName?: string;
+  studentId?: string;
+  studentCode?: string;
+  studentName?: string;
+  parentName?: string;
+  parentPhone?: string;
+  bio?: string;
+  createdAt?: FirestoreTimestamp;
+  updatedAt?: FirestoreTimestamp;
+  lastLoginAt?: FirestoreTimestamp;
+}
+
 
 /**
  * 2. SUBCOLLECTION LỚP HỌC: `/centers/{centerId}/classes/{classId}`

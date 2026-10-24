@@ -61,7 +61,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
   // Center Request Form State
   const [reqCenterName, setReqCenterName] = useState('');
-  const [reqEmail, setReqEmail] = useState('');
+  const [reqUsername, setReqUsername] = useState('');
+  const [reqRealEmail, setReqRealEmail] = useState('');
   const [reqPhone, setReqPhone] = useState('');
   const [reqAddress, setReqAddress] = useState('');
   const [isSubmittingReq, setIsSubmittingReq] = useState(false);
@@ -127,11 +128,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    const emailInput = reqEmail.trim().toLowerCase();
+    const usernameInput = reqUsername.trim().toLowerCase().replace(/^@+/, '').replace(/\s+/g, '');
+    const realEmailInput = reqRealEmail.trim().toLowerCase();
     const passInput = reqPassword.trim();
 
-    if (!reqCenterName.trim() || !emailInput || !passInput || !reqPhone.trim()) {
-      setErrorMessage('Vui lòng điền đầy đủ Tên trung tâm, Email đăng nhập, Mật khẩu và Số điện thoại.');
+    if (!reqCenterName.trim() || !usernameInput || !passInput || !reqPhone.trim()) {
+      setErrorMessage('Vui lòng điền đầy đủ Tên trung tâm, Tên đăng nhập, Mật khẩu và Số điện thoại.');
       return;
     }
 
@@ -143,10 +145,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     setIsSubmittingReq(true);
 
     try {
-      // Register School Center on Firebase with 1-month free trial
+      // Lấy username do người dùng nhập, tự động tạo fake email: `${username}@tenant.system.local`
+      // Gọi createUserWithEmailAndPassword(auth, authEmail, password) và lưu `username`, `realEmail` vào Firestore
       await registerSchoolCenter({
         centerName: reqCenterName.trim(),
-        email: emailInput,
+        username: usernameInput,
+        realEmail: realEmailInput,
         password: passInput,
         phone: reqPhone.trim(),
         address: reqAddress.trim() || 'Hà Nội',
@@ -157,16 +161,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       const expiryStr = trialDate.toLocaleDateString('vi-VN');
 
       setSuccessMessage(
-        `✓ Đăng ký thành công! Trung tâm "${reqCenterName}" được cấp 1 THÁNG DÙNG THỬ MIỄN PHÍ (Hạn đến ngày ${expiryStr}). Vui lòng nhập mật khẩu vừa tạo để đăng nhập vào hệ thống!`
+        `✓ Đăng ký thành công! Trung tâm "${reqCenterName}" (Tên đăng nhập: ${usernameInput}) được cấp 1 THÁNG DÙNG THỬ MIỄN PHÍ (Hạn đến ngày ${expiryStr}). Vui lòng nhập mật khẩu vừa tạo để đăng nhập vào hệ thống!`
       );
       
       // Auto pre-fill username for login and switch tab to Login
-      setUsername(emailInput);
+      setUsername(usernameInput);
       setAuthMode('login');
 
       // Clear register form
       setReqCenterName('');
-      setReqEmail('');
+      setReqUsername('');
+      setReqRealEmail('');
       setReqPassword('');
       setReqPhone('');
       setReqAddress('');
@@ -403,7 +408,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
               <div>
                 <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Email / Tên Đăng Nhập Admin *
+                  Tên Đăng Nhập *
+                </label>
+                <div className="relative rounded-xl">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                    <User className="w-4 h-4" />
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    value={reqUsername}
+                    onChange={(e) => setReqUsername(e.target.value)}
+                    placeholder="VD: hocgioi hoặc admin_triduc"
+                    className="block w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/70 text-slate-900 font-semibold focus:bg-white focus:border-[#0072B5]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Email Liên Hệ (Tùy Chọn)
                 </label>
                 <div className="relative rounded-xl">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -411,10 +435,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                   </div>
                   <input
                     type="email"
-                    required
-                    value={reqEmail}
-                    onChange={(e) => setReqEmail(e.target.value)}
-                    placeholder="VD: admin.triduc@gmail.com"
+                    value={reqRealEmail}
+                    onChange={(e) => setReqRealEmail(e.target.value)}
+                    placeholder="VD: lienhe@trungtam.edu.vn (Không bắt buộc)"
                     className="block w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/70 text-slate-900 font-semibold focus:bg-white focus:border-[#0072B5]"
                   />
                 </div>

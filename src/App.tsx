@@ -112,8 +112,12 @@ import {
   Bell,
   HeartHandshake,
   CalendarCheck,
-  MessageSquare
+  MessageSquare,
+  AlertCircle,
+  Phone,
+  Crown
 } from 'lucide-react';
+import { CenterRenewalModal } from './components/admin/CenterRenewalModal';
 
 export default function App() {
   // Authentication & Session State
@@ -138,7 +142,8 @@ export default function App() {
   const [centers, setCenters] = useState<CenterItem[]>([]);
   const [activeCenterId, setActiveCenterId] = useState<string>(() => {
     const stored = getStoredSession();
-    return stored?.centerId || DEFAULT_CENTER_ID;
+    if (!stored) return '';
+    return stored.centerId || (stored.role === 'super_admin' ? DEFAULT_CENTER_ID : '');
   });
 
   // Core Data backed by Realtime Firestore Sub-collections
@@ -153,6 +158,8 @@ export default function App() {
 
   // Selected state for Teacher view
   const [selectedClassId, setSelectedClassId] = useState<string>('');
+  const [isRenewalModalOpen, setIsRenewalModalOpen] = useState<boolean>(false);
+  const [openRenewalListTrigger, setOpenRenewalListTrigger] = useState<number>(0);
 
   // Modals
   const [isClassModalOpen, setIsClassModalOpen] = useState(false);
@@ -955,11 +962,15 @@ export default function App() {
           setActiveNav('teacher-attendance');
         }
       } else if (isCenterAdmin) {
-        // Center admin chỉ ẩn menu làm việc của Giáo viên
+        // Center admin ẩn menu làm việc của Giáo viên và Phụ huynh
         if (
           activeNav === 'teacher-attendance' ||
           activeNav === 'teacher-assignments' ||
-          activeNav === 'teacher-grading'
+          activeNav === 'teacher-grading' ||
+          activeNav === 'parent-portal' ||
+          activeNav === 'parent-attendance' ||
+          activeNav === 'parent-homework' ||
+          activeNav === 'parent-remarks'
         ) {
           setActiveNav('dashboard');
         }
@@ -1055,25 +1066,53 @@ export default function App() {
             mainClassName: 'Chưa phân lớp',
           });
 
-  const bachDuongStudent = students.find(
-    (s) => s.id === currentUser?.entityId || 
-           s.parentPhone === currentUser?.phone || 
-           s.username === currentUser?.username ||
-           s.id === currentUser?.id?.replace('ph-', '')
-  ) || students[0] || {
-    id: 'student-default',
-    studentCode: 'HS-01',
-    name: 'Học sinh',
-    classId: '',
-    className: 'Chưa phân lớp',
-    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-    attendanceStatus: 'present' as const,
-    parentName: 'Phụ huynh',
-    parentPhone: '',
-    gpa: 8.0,
-    recentGrade: '8.0 / 10',
-    status: 'active' as const,
-  };
+  const selectedParentStudent: StudentItem | null =
+    students.find(
+      (s) =>
+        Boolean(currentUser?.entityId && s.id === currentUser.entityId) ||
+        Boolean(currentUser?.phone && s.parentPhone && s.parentPhone.trim() === currentUser.phone.trim()) ||
+        Boolean(currentUser?.username && s.username && s.username.trim().toLowerCase() === currentUser.username.trim().toLowerCase()) ||
+        Boolean(currentUser?.id && s.id === currentUser.id.replace('ph-', ''))
+    ) ||
+    students[0] ||
+    null;
+
+  const activeCenterName =
+    centers.find((c) => c.id === (activeCenterId || currentUser?.centerId))?.name ||
+    currentUser?.centerName ||
+    'Trung Tâm Đào Tạo';
+
+  const targetCenterObj =
+    centers.find((c) => c.id === (currentUser?.centerId || activeCenterId)) ||
+    centers.find((c) => c.id === activeCenterId) ||
+    centers[0];
+
+  const centerExpiryRaw = targetCenterObj?.expiryDate;
+  let centerDaysRemaining: number | null = null;
+  let isCenterExpiringSoon = false;
+  let isCenterExpired = false;
+
+  if (centerExpiryRaw) {
+    const parts = centerExpiryRaw.split('-');
+    let expiryDate: Date;
+    if (parts.length === 3) {
+      expiryDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    } else {
+      expiryDate = new Date(centerExpiryRaw);
+    }
+
+    if (!isNaN(expiryDate.getTime())) {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const expiryStartOfDay = new Date(expiryDate.getFullYear(), expiryDate.getMonth(), expiryDate.getDate()).getTime();
+      const diffMs = expiryStartOfDay - startOfToday;
+      const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+      centerDaysRemaining = diffDays;
+      isCenterExpired = diffDays < 0;
+      isCenterExpiringSoon = diffDays >= 0 && diffDays <= 7;
+    }
+  }
 
   return (
     <div className="flex h-screen bg-slate-100/70 font-sans overflow-hidden text-slate-800">
@@ -1159,12 +1198,13 @@ export default function App() {
           ) : isCurrentAUserParent ? (
             /* TRƯỜNG HỢP 2: PHỤ HUYNH ĐĂNG NHẬP -> CHỈ HIỂN THỊ DUY NHẤT SỔ LIÊN LẠC PHỤ HUYNH, ẨN CÁC GIAO DIỆN KHÁC */
             <ParentPortalView
-              student={bachDuongStudent}
+              student={selectedParentStudent}
               assignments={assignments}
               allStudents={students}
               classes={classes}
               teachers={teachers}
               activeCenterId={activeCenterId || currentUser?.centerId}
+              centerName={activeCenterName}
               attendanceRecords={attendanceRecords}
               activeTab={
                 activeNav === 'parent-homework'
@@ -1213,6 +1253,7 @@ export default function App() {
                   classesCount={classes.length}
                   teachersCount={teachers.length}
                   studentsCount={students.length}
+                  openRenewalListTrigger={openRenewalListTrigger}
                   onDeleteCenterSuccess={handleDeleteCenterSuccess}
                   onShowToast={showToast}
                 />
@@ -1221,6 +1262,76 @@ export default function App() {
               {/* DASHBOARD SUMMARY VIEW (TỔNG QUAN TRUNG TÂM CHO CENTER ADMIN - ĐÃ XÓA PHẦN BÀI TẬP VÀ CHẤM ĐIỂM) */}
               {activeNav === 'dashboard' && currentRole === 'admin' && (
                 <div className="space-y-6">
+                  {/* CẢNH BÁO NỔI BẬT ĐẦU TRANG TỔNG QUAN TRUNG TÂM NẾU SẮP HẾT HẠN HOẶC ĐÃ HẾT HẠN */}
+                  {isCenterExpired ? (
+                    <div className="rounded-3xl bg-rose-50 border-2 border-rose-400 p-5 md:p-6 shadow-md flex flex-wrap items-center justify-between gap-4 animate-fade-in">
+                      <div className="flex items-start gap-4 max-w-3xl">
+                        <div className="p-3 bg-rose-600 rounded-2xl text-white shadow-sm shrink-0">
+                          <AlertCircle className="w-6 h-6" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-200 text-rose-900 text-[11px] font-black uppercase tracking-wider">
+                              ✕ Dịch Vụ Đã Quá Hạn
+                            </span>
+                            <span className="text-xs font-black text-rose-700">
+                              Quá hạn {Math.abs(centerDaysRemaining ?? 0)} ngày
+                            </span>
+                          </div>
+                          <h3 className="text-base md:text-lg font-black text-rose-950">
+                            Gói bản quyền của trường đã hết hạn sử dụng!
+                          </h3>
+                          <p className="text-xs md:text-sm text-rose-800 leading-relaxed font-medium">
+                            Hạn dịch vụ đã kết thúc vào ngày <strong>{targetCenterObj?.expiryDate}</strong>. Vui lòng liên hệ ngay Quản Trị Viên Hệ Thống (Super Admin) để thanh toán gia hạn, tránh bị tạm ngừng truy cập các tính năng quản lý và điểm danh.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsRenewalModalOpen(true)}
+                        className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs shadow-md transition-all cursor-pointer shrink-0"
+                      >
+                        <Crown className="w-4 h-4" />
+                        <span>Gia hạn ngay</span>
+                      </button>
+                    </div>
+                  ) : isCenterExpiringSoon ? (
+                    <div className="rounded-3xl bg-gradient-to-r from-amber-500/20 via-orange-500/15 to-amber-500/10 border-2 border-amber-400 p-5 md:p-6 shadow-md flex flex-wrap items-center justify-between gap-4 animate-fade-in">
+                      <div className="flex items-start gap-4 max-w-3xl">
+                        <div className="p-3 bg-amber-500 rounded-2xl text-white shadow-sm shrink-0 animate-bounce">
+                          <AlertTriangle className="w-6 h-6" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500 text-white text-[11px] font-black uppercase tracking-wider shadow-xs">
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              Cảnh Báo Hết Hạn
+                            </span>
+                            <span className="px-2.5 py-0.5 rounded-full bg-amber-200 text-amber-900 text-xs font-black">
+                              {centerDaysRemaining === 0 ? 'Hôm nay là ngày cuối cùng' : `Chỉ còn ${centerDaysRemaining} ngày nữa`}
+                            </span>
+                          </div>
+                          <h3 className="text-base md:text-lg font-black text-amber-950">
+                            Gói dịch vụ của trường sắp hết hạn sử dụng!
+                          </h3>
+                          <p className="text-xs md:text-sm text-amber-900 leading-relaxed font-medium">
+                            Thời hạn bản quyền hệ thống của trung tâm sẽ kết thúc vào ngày <strong>{targetCenterObj?.expiryDate}</strong> ({centerDaysRemaining === 0 ? 'hôm nay' : `còn ${centerDaysRemaining} ngày`}). Quản trị viên vui lòng liên hệ Super Admin gia hạn sớm để dịch vụ hoạt động liên tục, không làm gián đoạn việc giảng dạy và tương tác phụ huynh.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setIsRenewalModalOpen(true)}
+                          className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shadow-md transition-all cursor-pointer"
+                        >
+                          <Crown className="w-4 h-4" />
+                          <span>Gia hạn ngay</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {/* Hệ Thống Quản Trị Center */}
                   <AdminSystemCard
                     classes={classes}
@@ -1324,40 +1435,6 @@ export default function App() {
                 />
               )}
 
-              {/* PARENT PORTAL VIEW */}
-              {(activeNav === 'parent-portal' ||
-                activeNav === 'parent-attendance' ||
-                activeNav === 'parent-homework' ||
-                activeNav === 'parent-remarks') && (
-                <ParentPortalView
-                  student={bachDuongStudent}
-                  assignments={assignments}
-                  allStudents={students}
-                  classes={classes}
-                  teachers={teachers}
-                  activeCenterId={activeCenterId}
-                  attendanceRecords={attendanceRecords}
-                  activeTab={
-                    activeNav === 'parent-homework'
-                      ? 'homework'
-                      : activeNav === 'parent-remarks'
-                      ? 'remarks'
-                      : 'attendance'
-                  }
-                  onTabChange={(tab) => {
-                    if (tab === 'attendance') setActiveNav('parent-attendance');
-                    else if (tab === 'homework') setActiveNav('parent-homework');
-                    else if (tab === 'remarks') setActiveNav('parent-remarks');
-                  }}
-                  onRequestLeaveSuccess={async (studentName, date, reason) => {
-                    const target = students.find((s) => s.name === studentName);
-                    if (target) {
-                      await handleUpdateAttendance(target.id, 'excused');
-                    }
-                  }}
-                />
-              )}
-
               {/* REPORTS VIEW - ĐỒNG BỘ ĐIỂM DANH THEO THÁNG CỦA TẤT CẢ CÁC LỚP TRONG TRUNG TÂM */}
               {activeNav === 'reports' && (
                 <ReportsView
@@ -1413,11 +1490,13 @@ export default function App() {
           onUpdateScore={(id, score, comment) => handleTeacherGradeStudent(id, 'Học sinh', score, comment)}
         />
 
-        <HistoryModal
-          isOpen={isHistoryModalOpen}
-          onClose={() => setIsHistoryModalOpen(false)}
-          student={bachDuongStudent}
-        />
+        {selectedParentStudent && (
+          <HistoryModal
+            isOpen={isHistoryModalOpen}
+            onClose={() => setIsHistoryModalOpen(false)}
+            student={selectedParentStudent}
+          />
+        )}
 
         <NotificationModal
           isOpen={isNotificationModalOpen}
@@ -1589,6 +1668,31 @@ export default function App() {
             </>
           )}
         </nav>
+
+        {/* MODAL: FORM ĐĂNG KÝ GIA HẠN BẢN QUYỀN TRUNG TÂM */}
+        <CenterRenewalModal
+          isOpen={isRenewalModalOpen}
+          onClose={() => setIsRenewalModalOpen(false)}
+          center={
+            targetCenterObj || {
+              id: currentUser?.centerId || activeCenterId || 'center_01',
+              name: activeCenterName,
+              code: currentUser?.centerId || activeCenterId || 'HG01',
+              phone: currentUser?.phone || '',
+              email: currentUser?.email || '',
+              packagePlan: 'Premium',
+              expiryDate: '2026-12-31',
+              status: 'active',
+            }
+          }
+          currentUser={currentUser}
+          onShowToast={showToast}
+          onSuccess={() => {
+            setIsRenewalModalOpen(false);
+            setActiveNav('admin-centers');
+            setOpenRenewalListTrigger((prev) => prev + 1);
+          }}
+        />
       </div>
     </div>
   );

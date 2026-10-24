@@ -25,7 +25,9 @@ import {
   Phone, 
   X, 
   Sparkles, 
-  ArrowUpRight 
+  ArrowUpRight,
+  MessageSquare,
+  Bell
 } from 'lucide-react';
 import { collection, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -39,7 +41,12 @@ import {
   toggleAccountLock,
   createSystemUser,
   normalizeUsername,
-  migrateLegacyCenterArrays
+  migrateLegacyCenterArrays,
+  RenewalRequestItem,
+  getRealtimeRenewalRequests,
+  approveRenewalRequest,
+  rejectRenewalRequest,
+  deleteRenewalRequest
 } from '../../services/firebaseService';
 import { 
   UserAccount, 
@@ -77,6 +84,18 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
   // 2. Users Realtime State from collection(db, "users")
   const [globalUsers, setGlobalUsers] = useState<any[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(true);
+
+  // 3. Renewal Requests Realtime State from Center Admins
+  const [renewalRequests, setRenewalRequests] = useState<RenewalRequestItem[]>([]);
+  const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
+  const [renewalFeedbackMap, setRenewalFeedbackMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const unsub = getRealtimeRenewalRequests((list) => {
+      setRenewalRequests(list);
+    });
+    return () => unsub();
+  }, []);
 
   // Lắng nghe collection root `centers` bằng onSnapshot thời gian thực
   useEffect(() => {
@@ -377,9 +396,10 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
   }, [centers, globalUsers]);
 
   const centerAdminCount = centerAdminAccounts.length;
-  // Tab 3: "3. Cảnh Báo Hết Hạn & Nhật Ký Bản Quyền ({warningCount})"
-  // Đếm tổng số trung tâm thuộc nhóm "Sắp hết hạn" + "Đã hết hạn/Khóa" để làm Badge thông báo.
-  const warningCount = warningCenters + expiredOrSuspendedCenters;
+  const pendingRenewalRequests = renewalRequests.filter((r) => r.status === 'pending');
+  // Tab 3: "3. Quản Lý Gia Hạn & Nhật Ký Bản Quyền ({warningCount})"
+  // Đếm tổng số yêu cầu gia hạn chờ duyệt + trung tâm "Sắp hết hạn" + "Đã hết hạn/Khóa" để làm Badge thông báo.
+  const warningCount = pendingRenewalRequests.length + warningCenters + expiredOrSuspendedCenters;
 
   // Helper kiểm tra trạng thái chi tiết cho từng trung tâm
   const checkExpiryStatus = (center: any) => {
@@ -532,6 +552,50 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
       onShowToast(`Lỗi gia hạn: ${err.message}`, 'error');
     } finally {
       setIsRenewing(false);
+    }
+  };
+
+  const handleApproveRenewalReq = async (req: RenewalRequestItem) => {
+    setProcessingRequestId(req.id);
+    const feedback = (renewalFeedbackMap[req.id] ?? '').trim();
+    try {
+      const newExpiry = await approveRenewalRequest(req, feedback);
+      onShowToast(
+        `✓ Đã duyệt yêu cầu & gia hạn "${req.centerName}" thêm ${req.months} tháng! Hạn mới: ${newExpiry}${feedback ? ' (Đã đồng bộ phản hồi tới Trung tâm)' : ''}`,
+        'success'
+      );
+    } catch (err: any) {
+      onShowToast(`Lỗi duyệt gia hạn: ${err.message}`, 'error');
+    } finally {
+      setProcessingRequestId(null);
+    }
+  };
+
+  const handleRejectRenewalReq = async (req: RenewalRequestItem) => {
+    setProcessingRequestId(req.id);
+    const feedback = (renewalFeedbackMap[req.id] ?? '').trim();
+    try {
+      await rejectRenewalRequest(req, feedback);
+      onShowToast(
+        `Đã từ chối yêu cầu gia hạn của "${req.centerName}"${feedback ? ' và gửi phản hồi tới Trung tâm' : ''}`,
+        'info'
+      );
+    } catch (err: any) {
+      onShowToast(`Lỗi từ chối: ${err.message}`, 'error');
+    } finally {
+      setProcessingRequestId(null);
+    }
+  };
+
+  const handleDeleteRenewalReq = async (req: RenewalRequestItem) => {
+    setProcessingRequestId(req.id);
+    try {
+      await deleteRenewalRequest(req);
+      onShowToast(`Đã xóa bản ghi yêu cầu gia hạn của "${req.centerName}"`, 'info');
+    } catch (err: any) {
+      onShowToast(`Lỗi xóa yêu cầu: ${err.message}`, 'error');
+    } finally {
+      setProcessingRequestId(null);
     }
   };
 
@@ -847,7 +911,7 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
           }`}
         >
           <BarChart3 className="w-4 h-4" />
-          <span>3. Cảnh Báo Hết Hạn &amp; Nhật Ký Bản Quyền ({warningCount})</span>
+          <span>3. Quản Lý Yêu Cầu Gia Hạn &amp; Nhật Ký Bản Quyền ({warningCount})</span>
           {warningCount > 0 && (
             <span className={`ml-1 rounded-full text-[10px] font-black px-1.5 py-0.5 ${
               activeTab === 'analytics' ? 'bg-white text-rose-700' : 'bg-rose-500 text-white'
@@ -857,6 +921,147 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
           )}
         </button>
       </div>
+
+      {/* BANNER NỔI BẬT: YÊU CẦU GIA HẠN MỚI TỪ CENTER ADMIN GỬI VỀ */}
+      {pendingRenewalRequests.length > 0 && (
+        <div className="rounded-3xl bg-gradient-to-r from-amber-50 via-orange-50/70 to-amber-50/40 border-2 border-amber-400 p-5 shadow-md space-y-4 animate-fade-in">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200/80 pb-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-2xl bg-amber-500 text-white shadow-xs animate-bounce">
+                <Bell className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm sm:text-base font-black text-amber-950">
+                    Yêu Cầu Gia Hạn Mới Từ Trung Tâm Đang Chờ Phê Duyệt
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[11px] font-black">
+                    {pendingRenewalRequests.length} yêu cầu mới
+                  </span>
+                </div>
+                <p className="text-xs text-amber-900 font-medium">
+                  Center Admin đã chọn gói gia hạn và gửi thông tin xác nhận. Nhấn <strong>"Duyệt &amp; Gia Hạn Ngay"</strong> để tự động cộng thêm thời hạn cho trường.
+                </p>
+              </div>
+            </div>
+
+            {activeTab !== 'analytics' && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('analytics')}
+                className="px-3.5 py-2 rounded-xl bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-xs cursor-pointer transition-all"
+              >
+                Xem toàn bộ lịch sử gia hạn &rarr;
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+            {pendingRenewalRequests.map((req) => (
+              <div
+                key={req.id}
+                className="rounded-2xl bg-white border border-amber-300 p-4 shadow-xs flex flex-col justify-between gap-3"
+              >
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-[#0072B5] font-black text-[10px] border border-blue-200 uppercase">
+                        Mã: {req.centerCode || req.centerId}
+                      </span>
+                      <h4 className="font-black text-sm text-slate-900">{req.centerName}</h4>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-950 border border-amber-300 font-black text-xs">
+                      +{req.months} Tháng • {Number(req.price ?? req.amount ?? 0).toLocaleString('vi-VN')} đ
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs bg-slate-50 p-2.5 rounded-xl border border-slate-200/70">
+                    <div className="flex items-center gap-1.5 text-slate-700 font-bold">
+                      <Phone className="w-3.5 h-3.5 text-[#0072B5] shrink-0" />
+                      <span>SĐT liên hệ: <strong className="text-slate-900">{req.contactPhone || 'Chưa ghi'}</strong></span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-slate-600 font-semibold">
+                      <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>Gửi lúc: {req.createdAtStr || 'Vừa xong'}</span>
+                    </div>
+                    {req.memo && (
+                      <div className="sm:col-span-2 flex items-center justify-between gap-2 pt-1.5 border-t border-slate-200/60 text-xs">
+                        <span className="text-slate-500 font-bold">Nội dung CK (Memo):</span>
+                        <span className="font-mono font-black text-amber-950 bg-amber-100/80 px-2 py-0.5 rounded border border-amber-300">
+                          {req.memo}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {req.message && (
+                    <div className="p-2.5 rounded-xl bg-amber-50/60 border border-amber-200/70 text-xs text-slate-700 flex items-start gap-2">
+                      <MessageSquare className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold text-amber-950">Lời nhắn từ trường: </span>
+                        <span className="font-medium">{req.message}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Ô nhập phản hồi của Super Admin trước khi Duyệt gia hạn hoặc Từ chối */}
+                  <div className="p-2.5 rounded-xl bg-blue-50/60 border border-blue-200/80 space-y-1.5">
+                    <label
+                      htmlFor={`feedback-${req.id}`}
+                      className="flex items-center justify-between gap-2 text-[11px] font-black text-[#0B486B]"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <MessageSquare className="w-3.5 h-3.5 text-[#0072B5] shrink-0" />
+                        <span>Phản hồi gửi đến Center Admin (đồng bộ Firebase):</span>
+                      </span>
+                      <span className="text-[10px] font-semibold text-[#0072B5]">
+                        Hiển thị trong Danh sách gia hạn của trường
+                      </span>
+                    </label>
+                    <textarea
+                      id={`feedback-${req.id}`}
+                      rows={2}
+                      value={renewalFeedbackMap[req.id] ?? ''}
+                      onChange={(e) =>
+                        setRenewalFeedbackMap((prev) => ({
+                          ...prev,
+                          [req.id]: e.target.value,
+                        }))
+                      }
+                      placeholder="Nhập nội dung phản hồi trước khi Duyệt hoặc Từ chối (VD: Đã nhận thanh toán, kích hoạt gói gia hạn thành công / Vui lòng kiểm tra lại nội dung CK...)"
+                      className="w-full rounded-xl border border-blue-200 bg-white focus:border-[#0072B5] p-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:outline-hidden transition-colors resize-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    disabled={processingRequestId === req.id}
+                    onClick={() => handleRejectRenewalReq(req)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-100 text-slate-600 hover:text-rose-700 font-bold text-xs cursor-pointer transition-colors"
+                  >
+                    Từ chối
+                  </button>
+                  <button
+                    type="button"
+                    disabled={processingRequestId === req.id}
+                    onClick={() => handleApproveRenewalReq(req)}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-xs cursor-pointer transition-all disabled:opacity-50"
+                  >
+                    {processingRequestId === req.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    )}
+                    <span>Duyệt &amp; Gia Hạn Ngay (+{req.months} tháng)</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: CENTER MANAGEMENT & LICENSING */}
       {activeTab === 'centers' && (
@@ -893,6 +1098,29 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
             {filteredCenters.map((center: CenterItem) => {
               const statusInfo = checkExpiryStatus(center);
               const isActiveCurrent = center.id === activeCenterId;
+              const approvedReq =
+                renewalRequests.find(
+                  (r) =>
+                    r.status === 'approved' &&
+                    ((r.centerId && r.centerId === center.id) ||
+                      (r.centerCode &&
+                        center.code &&
+                        r.centerCode.toUpperCase() === center.code.toUpperCase()))
+                ) ||
+                ((center as any)?.latestRenewalRequest?.status === 'approved'
+                  ? (center as any).latestRenewalRequest
+                  : null);
+              const rawPlan = String(center.packagePlan || '').trim();
+              const displayPlan =
+                approvedReq && Number(approvedReq.months) > 0
+                  ? `${Number(approvedReq.months)} Tháng`
+                  : /trial|dùng thử|dung thu/i.test(rawPlan) && statusInfo.daysLeft > 35
+                  ? statusInfo.daysLeft > 200
+                    ? '12 Tháng'
+                    : statusInfo.daysLeft > 100
+                    ? '6 Tháng'
+                    : '3 Tháng'
+                  : rawPlan || 'Premium';
 
               return (
                 <div
@@ -910,7 +1138,7 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black px-2.5 py-0.5">
                         <Crown className="w-3 h-3 text-amber-600" />
-                        Gói: {center.packagePlan || 'Premium'}
+                        {displayPlan.toLowerCase().startsWith('gói ') ? displayPlan : `Gói: ${displayPlan}`}
                       </span>
 
                       <span
@@ -1211,23 +1439,165 @@ export const SuperAdminPortalView: React.FC<SuperAdminPortalViewProps> = ({
         </div>
       )}
 
-      {/* TAB 3: EXPIRY WARNINGS & LICENSING AUDIT LOG */}
+      {/* TAB 3: RENEWAL REQUESTS MANAGEMENT, EXPIRY WARNINGS & LICENSING AUDIT LOG */}
       {activeTab === 'analytics' && (
         <div className="bg-white rounded-3xl p-6 border border-slate-200 space-y-6">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <div>
               <h2 className="text-base font-black text-[#0B486B] flex items-center gap-2">
-                <Clock className="w-5 h-5 text-amber-500" />
-                <span>Cảnh Báo Hợp Đồng &amp; Nhật Ký Bản Quyền Đa Trung Tâm</span>
+                <Crown className="w-5 h-5 text-amber-500" />
+                <span>Quản Lý Yêu Cầu Gia Hạn &amp; Nhật Ký Bản Quyền Đa Trung Tâm</span>
               </h2>
               <p className="text-xs text-slate-500 font-medium mt-0.5">
-                Bảng theo dõi hạn sử dụng dịch vụ SaaS, gói cước bản quyền và tính năng gia hạn tức thì trên Cloud Firestore.
+                Tiếp nhận trực tiếp yêu cầu gia hạn từ các Center Admin (gói 3 tháng, 6 tháng, 12 tháng), kiểm tra thông tin liên hệ và phê duyệt gia hạn tức thì.
               </p>
             </div>
           </div>
 
-          {/* Section 1: Cảnh báo cần chú ý */}
+          {/* Section 0: Danh sách Yêu Cầu Gia Hạn gửi từ Center Admin */}
           <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#0B486B] flex items-center gap-1.5">
+                <Bell className="w-4 h-4 text-amber-500" />
+                <span>Danh Sách Yêu Cầu Gia Hạn Từ Trung Tâm ({renewalRequests.length})</span>
+              </h3>
+            </div>
+
+            {renewalRequests.length === 0 ? (
+              <div className="p-6 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-xs text-slate-500 font-medium">
+                Hiện chưa có yêu cầu gia hạn nào được gửi từ Center Admin. Khi Center Admin nhấn <strong>"Gửi yêu cầu gia hạn"</strong>, thông tin gói cước, SĐT liên hệ và lời nhắn sẽ hiển thị ngay tại đây.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-extrabold uppercase tracking-wider">
+                      <th className="p-3 rounded-l-xl">Trung Tâm / Thời Gian</th>
+                      <th className="p-3">Gói Đăng Ký &amp; Số Tiền</th>
+                      <th className="p-3">SĐT Liên Hệ</th>
+                      <th className="p-3">Lời Nhắn &amp; Phản Hồi Super Admin</th>
+                      <th className="p-3">Trạng Thái</th>
+                      <th className="p-3 text-right rounded-r-xl">Thao Tác Quản Lý</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {renewalRequests.map((req) => (
+                      <tr key={req.id} className="hover:bg-slate-50/80 transition-colors align-top">
+                        <td className="p-3">
+                          <div className="font-extrabold text-slate-900">{req.centerName}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            Mã: {req.centerCode || req.centerId} • {req.createdAtStr || 'Mới gửi'}
+                          </div>
+                        </td>
+                        <td className="p-3">
+                          <div className="space-y-1">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-950 border border-amber-300 text-[11px] font-black px-2.5 py-0.5">
+                              <Crown className="w-3 h-3 text-amber-600" />
+                              Gói {req.months} tháng ({Number(req.price ?? req.amount ?? 0).toLocaleString('vi-VN')} đ)
+                            </span>
+                            {req.memo && (
+                              <div className="text-[10px] font-mono font-bold text-slate-600">
+                                Memo: <span className="text-amber-900 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">{req.memo}</span>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="p-3 font-bold text-[#0072B5]">
+                          {req.contactPhone || '-'}
+                        </td>
+                        <td className="p-3 max-w-xs text-slate-700 space-y-2">
+                          <div className="line-clamp-2 text-xs" title={req.message}>
+                            <span className="font-bold text-slate-500">Trường gửi: </span>
+                            {req.message || '-'}
+                          </div>
+                          {req.status === 'pending' ? (
+                            <input
+                              type="text"
+                              value={renewalFeedbackMap[req.id] ?? ''}
+                              onChange={(e) =>
+                                setRenewalFeedbackMap((prev) => ({
+                                  ...prev,
+                                  [req.id]: e.target.value,
+                                }))
+                              }
+                              placeholder="Nhập phản hồi gửi đến trường..."
+                              className="w-full rounded-lg border border-blue-200 bg-blue-50/40 focus:bg-white focus:border-[#0072B5] px-2.5 py-1.5 text-[11px] font-medium text-slate-800 placeholder:text-slate-400 focus:outline-hidden"
+                            />
+                          ) : req.adminFeedback ? (
+                            <div className="p-2 rounded-lg bg-blue-50/70 border border-blue-200/80 text-[11px] text-[#0B486B]">
+                              <span className="font-black">Phản hồi Admin: </span>
+                              <span className="font-semibold text-slate-800">{req.adminFeedback}</span>
+                              {req.respondedAtStr && (
+                                <div className="text-[10px] text-slate-500 mt-0.5">
+                                  Phản hồi lúc: {req.respondedAtStr}
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="p-3">
+                          {req.status === 'pending' ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-0.5 text-[10px] font-black">
+                              ⏳ Chờ duyệt
+                            </span>
+                          ) : req.status === 'approved' ? (
+                            <div className="space-y-0.5">
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 px-2.5 py-0.5 text-[10px] font-black">
+                                ✓ Đã duyệt &amp; gia hạn
+                              </span>
+                              {req.newExpiryDate && (
+                                <div className="text-[10px] text-emerald-700 font-bold">
+                                  Hạn mới: {req.newExpiryDate}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-800 border border-rose-300 px-2.5 py-0.5 text-[10px] font-black">
+                              ✕ Đã từ chối
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3 text-right space-x-1.5 whitespace-nowrap">
+                          {req.status === 'pending' && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={processingRequestId === req.id}
+                                onClick={() => handleApproveRenewalReq(req)}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px] cursor-pointer inline-flex items-center gap-1 shadow-xs"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Duyệt (+{req.months}T)</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={processingRequestId === req.id}
+                                onClick={() => handleRejectRenewalReq(req)}
+                                className="px-2.5 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-[11px] cursor-pointer"
+                              >
+                                Từ chối
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            disabled={processingRequestId === req.id}
+                            onClick={() => handleDeleteRenewalReq(req)}
+                            className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] cursor-pointer"
+                          >
+                            Xóa
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Section 1: Cảnh báo cần chú ý */}
+          <div className="space-y-3 pt-4 border-t border-slate-100">
             <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">Trung Tâm Cần Chú Ý Hạn Bản Quyền</h3>
             {centers
               .filter((c) => checkExpiryStatus(c).color !== 'emerald')

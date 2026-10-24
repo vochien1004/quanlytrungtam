@@ -152,6 +152,30 @@
         "feedback": { "type": "string" }
       },
       "required": ["id", "assignmentId", "studentId", "fileUrl"]
+    },
+    "RenewalRequest": {
+      "title": "RenewalRequest",
+      "description": "Yêu cầu gia hạn bản quyền từ Center Admin gửi đến Super Admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "centerId": { "type": "string" },
+        "centerName": { "type": "string" },
+        "centerCode": { "type": "string" },
+        "months": { "type": "number", "enum": [3, 6, 12] },
+        "amount": { "type": "number", "enum": [199000, 399000, 599000] },
+        "price": { "type": "number", "enum": [199000, 399000, 599000] },
+        "memo": { "type": "string" },
+        "bankId": { "type": "string" },
+        "accountNo": { "type": "string" },
+        "accountName": { "type": "string" },
+        "packageLabel": { "type": "string" },
+        "contactPhone": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAtStr": { "type": "string" }
+      },
+      "required": ["id", "centerId", "months", "price", "memo", "contactPhone"]
     }
   },
   "firestore": {
@@ -162,6 +186,10 @@
     "/users/{uid}": {
       "schema": { "$ref": "#/entities/GlobalUser" },
       "description": "Root Collection Index: chứa dữ liệu định danh và định tuyến tối thiểu (uid, centerId, role, status, username, email)"
+    },
+    "/renewal_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/RenewalRequest" },
+      "description": "Root Collection chứa các yêu cầu gia hạn bản quyền từ Center Admin gửi lên Super Admin"
     },
     "/centers/{centerId}/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },

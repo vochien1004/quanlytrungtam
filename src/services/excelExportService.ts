@@ -1,6 +1,35 @@
-import * as XLSX from 'xlsx-js-style';
+import * as XLSXStyleModule from 'xlsx-js-style';
+import * as XLSXBaseModule from 'xlsx';
 import JSZip from 'jszip';
 import { ClassItem, TeacherItem, StudentItem } from '../data/mockData';
+
+/**
+ * Helper lấy instance XLSX tương thích mọi môi trường (Vite Dev ESM, UMD window.XLSX, Production Bundle):
+ * - Ưu tiên xlsx-js-style (hỗ trợ đầy đủ border, màu nền, font chữ)
+ * - Fallback sang window.XLSX hoặc bộ chuẩn xlsx (xlsx.mjs) nếu module UMD chưa export trực tiếp
+ */
+function getXLSX(): any {
+  const styleMod = XLSXStyleModule as any;
+  if (styleMod?.utils && typeof styleMod.utils.book_new === 'function') {
+    return styleMod;
+  }
+  if (styleMod?.default?.utils && typeof styleMod.default.utils.book_new === 'function') {
+    return styleMod.default;
+  }
+  if (typeof window !== 'undefined' && (window as any).XLSX?.utils) {
+    return (window as any).XLSX;
+  }
+  const baseMod = XLSXBaseModule as any;
+  if (baseMod?.utils && typeof baseMod.utils.book_new === 'function') {
+    return baseMod;
+  }
+  if (baseMod?.default?.utils && typeof baseMod.default.utils.book_new === 'function') {
+    return baseMod.default;
+  }
+  return styleMod;
+}
+
+const XLSX: any = getXLSX();
 
 export interface ExportMonthlyAttendanceOptions {
   month: string; // 'YYYY-MM'
@@ -94,14 +123,39 @@ export function sanitizeSheetName(rawName: string, index: number, usedNames: Set
 }
 
 /**
+ * Helper kích hoạt tải Blob trên trình duyệt và iframe
+ */
+function triggerBrowserDownload(blob: Blob, filename: string): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    if (a.parentNode) {
+      a.parentNode.removeChild(a);
+    }
+    URL.revokeObjectURL(url);
+  }, 500);
+}
+
+/**
  * Helper tải file Excel hỗ trợ môi trường trình duyệt:
  * - Tự động bổ sung PageSetup in ấn vừa khít 1 trang A4 nằm ngang (Landscape, paperSize 9, fitToWidth 1, fitToHeight 1)
  * - Tương thích trình duyệt và iframe
  */
 export async function saveWorkbook(workbook: any, filename: string): Promise<void> {
+  const xlsxLib = getXLSX();
   try {
-    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const zip = await JSZip.loadAsync(wbout);
+    const wbout = xlsxLib.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const zipLib: any = (JSZip as any)?.loadAsync ? JSZip : (JSZip as any)?.default;
+    if (!zipLib || typeof zipLib.loadAsync !== 'function') {
+      throw new Error('JSZip loadAsync not available');
+    }
+    const zip = await zipLib.loadAsync(wbout);
 
     // Tiêm cấu hình in ấn: Khổ A4, Xoay ngang (Landscape), Fit to 1 page wide x 1 page tall cho từng worksheet
     for (const sheetPath of Object.keys(zip.files)) {
@@ -137,35 +191,17 @@ export async function saveWorkbook(workbook: any, filename: string): Promise<voi
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
 
-    const url = URL.createObjectURL(modifiedBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 200);
+    triggerBrowserDownload(modifiedBlob, filename);
   } catch (err) {
     console.warn('Lỗi khi tiêm pageSetup bằng JSZip, sử dụng phương thức ghi trực tiếp:', err);
     try {
-      XLSX.writeFile(workbook, filename);
-    } catch {
-      const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+      const wbout = xlsxLib.write(workbook, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([wbout], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 200);
+      triggerBrowserDownload(blob, filename);
+    } catch {
+      xlsxLib.writeFile(workbook, filename);
     }
   }
 }
@@ -195,6 +231,7 @@ function buildClassAttendanceWorksheet({
   month: string;
   centerName?: string;
 }) {
+  const XLSX = getXLSX();
   const [yearStr, monthStr] = month.split('-');
   const year = parseInt(yearStr || '2026', 10);
   const monthNum = parseInt(monthStr || '10', 10);
@@ -219,8 +256,8 @@ function buildClassAttendanceWorksheet({
   rows.push([titleText]);
 
   // Hàng 2: Chi tiết Lớp, Giáo viên, Môn học, Sĩ số (ĐÃ BỎ TÊN PHÒNG HỌC THEO YÊU CẦU)
-  const teacherDisplay = teacher.fullName || teacher.name || 'Chưa phân công';
-  const teacherPhone = teacher.phone ? ` (${teacher.phone})` : '';
+  const teacherDisplay = teacher?.fullName || teacher?.name || 'Chưa phân công';
+  const teacherPhone = teacher?.phone ? ` (${teacher.phone})` : '';
   const subInfoText = `Lớp: ${cls.name}   |   GV: ${teacherDisplay}${teacherPhone}   |   Môn: ${cls.subject || 'Toán học'}   |   Sĩ số: ${classStudents.length} HS`;
   rows.push([subInfoText]);
 
@@ -458,8 +495,10 @@ function buildClassAttendanceWorksheet({
     { s: { r: 4, c: 0 }, e: { r: 4, c: 2 } },
     // Hàng 4: Banner Tháng MM/YYYY
     { s: { r: 4, c: 3 }, e: { r: 4, c: 2 + totalDays } },
-    // Hàng 4: Banner tổng kết
-    { s: { r: 4, c: 3 + totalDays }, e: { r: 4, c: lastColIdx } },
+    // Hàng 4: Banner tổng kết (chỉ merge khi có từ 2 cột trở lên)
+    ...(lastColIdx > 3 + totalDays
+      ? [{ s: { r: 4, c: 3 + totalDays }, e: { r: 4, c: lastColIdx } }]
+      : []),
     // Hàng tổng cộng: Merge TT + TÊN HỌC SINH
     { s: { r: totalRowIdx, c: 0 }, e: { r: totalRowIdx, c: 1 } },
     // Merge dòng ghi chú 1 qua toàn bộ chiều rộng bảng
@@ -761,6 +800,7 @@ export async function exportAllClassesAttendanceWorkbook({
   includeOverviewSheet = true,
   centerName = 'TRUNG TÂM ĐÀO TẠO',
 }: ExportMonthlyAttendanceOptions): Promise<{ filename: string; classSheetCount: number }> {
+  const XLSX = getXLSX();
   const [yearStr, monthStr] = month.split('-');
   const workbook = XLSX.utils.book_new();
   const usedNames = new Set<string>();
@@ -1176,6 +1216,7 @@ export async function exportSingleClassAttendanceWorkbook({
   showFinancials,
   centerName = 'TRUNG TÂM ĐÀO TẠO',
 }: ExportSingleClassOptions): Promise<string> {
+  const XLSX = getXLSX();
   const [yearStr, monthStr] = month.split('-');
   const workbook = XLSX.utils.book_new();
 

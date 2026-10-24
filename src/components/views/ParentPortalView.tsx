@@ -49,12 +49,13 @@ import { DocumentPreviewModal, DocumentPreviewData } from '../common/DocumentPre
 import { submitStudentHomework, getRealtimeAttendance } from '../../services/firebaseService';
 
 interface ParentPortalViewProps {
-  student: StudentItem;
+  student?: StudentItem | null;
   assignments: AssignmentItem[];
   allStudents?: StudentItem[];
   classes?: ClassItem[];
   teachers?: TeacherItem[];
   activeCenterId?: string;
+  centerName?: string;
   attendanceRecords?: any[];
   activeTab?: 'attendance' | 'homework' | 'remarks';
   initialTab?: 'attendance' | 'homework' | 'remarks';
@@ -63,37 +64,72 @@ interface ParentPortalViewProps {
   onRequestLeaveSuccess?: (studentName: string, date: string, reason: string) => void;
 }
 
+const EMPTY_STUDENT_LIST: StudentItem[] = [];
+const EMPTY_CLASS_LIST: ClassItem[] = [];
+const EMPTY_TEACHER_LIST: TeacherItem[] = [];
+const EMPTY_ATTENDANCE_LIST: any[] = [];
+
+const EMPTY_PLACEHOLDER_STUDENT: StudentItem = {
+  id: '',
+  name: 'Chưa có học sinh',
+  classId: '',
+  className: 'Chưa có lớp',
+  avatar: '',
+  attendanceStatus: 'present',
+  note: '',
+  parentName: 'Chưa cập nhật',
+  parentPhone: '',
+  gpa: 0,
+  recentGrade: '—',
+};
+
 export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
   student,
   assignments,
-  allStudents = [],
-  classes = [],
-  teachers = [],
+  allStudents = EMPTY_STUDENT_LIST,
+  classes = EMPTY_CLASS_LIST,
+  teachers = EMPTY_TEACHER_LIST,
   activeCenterId,
-  attendanceRecords: propAttendanceRecords = [],
+  centerName = 'Trung Tâm Đào Tạo',
+  attendanceRecords: propAttendanceRecords = EMPTY_ATTENDANCE_LIST,
   activeTab: activeTabProp,
   initialTab,
   onTabChange,
   onSelectStudent,
   onRequestLeaveSuccess,
 }) => {
-  // Current active student if selectable
-  const fallbackStudentItem: StudentItem = {
-    id: 'student-default',
-    name: 'Học sinh',
-    classId: '',
-    className: 'Chưa xếp lớp',
-    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-    attendanceStatus: 'present',
-    note: 'Chưa có nhận xét.',
-    parentName: 'Phụ huynh học sinh',
-    parentPhone: '0900.000.000',
-    gpa: 8.0,
-    recentGrade: '8.0 / 10',
-  };
+  // Chỉ lấy danh sách học sinh thực tế của trung tâm (loại bỏ hoàn toàn bản ghi mặc định ảo)
+  const validStudents = useMemo(() => {
+    return (allStudents || []).filter((s) => s && s.id && s.id !== 'student-default');
+  }, [allStudents]);
 
-  const [activeStudentId, setActiveStudentId] = useState<string>(student?.id || '');
-  const currentStudent = allStudents.find((s) => s.id === activeStudentId) || student || fallbackStudentItem;
+  const validPropStudent = student && student.id && student.id !== 'student-default' ? student : null;
+  const hasAnyStudent = validStudents.length > 0 || Boolean(validPropStudent);
+
+  const [activeStudentId, setActiveStudentId] = useState<string>(
+    validPropStudent?.id || validStudents[0]?.id || ''
+  );
+
+  // Tự động đồng bộ activeStudentId khi danh sách học sinh của trung tâm thay đổi
+  useEffect(() => {
+    if (!hasAnyStudent) {
+      if (activeStudentId !== '') {
+        setActiveStudentId('');
+      }
+      return;
+    }
+    if (activeStudentId && validStudents.some((s) => s.id === activeStudentId)) {
+      return;
+    }
+    const nextId = validPropStudent?.id || validStudents[0]?.id || '';
+    if (nextId !== activeStudentId) {
+      setActiveStudentId(nextId);
+    }
+  }, [hasAnyStudent, validStudents, validPropStudent, activeStudentId]);
+
+  const currentStudent: StudentItem = hasAnyStudent
+    ? validStudents.find((s) => s.id === activeStudentId) || validPropStudent || validStudents[0]
+    : EMPTY_PLACEHOLDER_STUDENT;
 
   const [internalTab, setInternalTab] = useState<'attendance' | 'homework' | 'remarks'>(activeTabProp || initialTab || 'attendance');
   const activeTab = activeTabProp || internalTab;
@@ -118,24 +154,30 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
-  // Đồng bộ khi propAttendanceRecords thay đổi từ component cha
+  // Đồng bộ khi propAttendanceRecords thay đổi từ component cha (kể cả khi danh sách rỗng ở trung tâm mới)
   useEffect(() => {
-    if (propAttendanceRecords && propAttendanceRecords.length > 0) {
-      setLocalAttendanceRecords(propAttendanceRecords);
-      setLastSyncedTime(new Date().toLocaleTimeString('vi-VN'));
-    }
+    setLocalAttendanceRecords(Array.isArray(propAttendanceRecords) ? propAttendanceRecords : []);
+    setLastSyncedTime(new Date().toLocaleTimeString('vi-VN'));
   }, [propAttendanceRecords]);
 
-  // Lắng nghe dữ liệu điểm danh thời gian thực (Real-time Firebase Listener) từ tài khoản Giáo viên
+  // Lắng nghe dữ liệu điểm danh thời gian thực (Real-time Firebase Listener) theo đúng activeCenterId
   useEffect(() => {
-    if (!activeCenterId) return;
+    if (!activeCenterId) {
+      setLocalAttendanceRecords([]);
+      return;
+    }
     setIsAttendanceSyncing(true);
     const unsub = getRealtimeAttendance(
       activeCenterId,
       (records) => {
         if (records && Array.isArray(records)) {
-          setLocalAttendanceRecords(records);
+          const scopedRecords = records.filter(
+            (r: any) => !r?.centerId || r.centerId === activeCenterId
+          );
+          setLocalAttendanceRecords(scopedRecords);
           setLastSyncedTime(new Date().toLocaleTimeString('vi-VN'));
+        } else {
+          setLocalAttendanceRecords([]);
         }
         setIsAttendanceSyncing(false);
       },
@@ -339,32 +381,33 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
 
   // Parent feedback message state for timeline remarks
   const [parentReplyInput, setParentReplyInput] = useState<Record<string, string>>({});
-  const [parentReplies, setParentReplies] = useState<Record<string, string>>({
-    'log-1': 'Dạ cảm ơn cô Hoa nhiều! Tối nay về gia đình đã khen ngợi và động viên cháu tiếp tục cố gắng.',
-    'log-2': 'Gia đình đã nhắc cháu rèn lại chữ viết và căn chỉnh lề theo góp ý của thầy Đức ạ.',
-  });
+  const [parentReplies, setParentReplies] = useState<Record<string, string>>({});
 
   // Tìm giáo viên phụ trách thực tế từ danh sách lớp học hoặc giáo viên
-  const currentClass = classes.find(
-    (c) =>
-      (currentStudent?.classId && (c.id === currentStudent.classId || c.code === currentStudent.classId)) ||
-      (currentStudent?.className && (c.name === currentStudent.className || c.code === currentStudent.className))
-  );
-  const currentTeacher = teachers.find(
-    (t) =>
-      t.id === currentClass?.teacherId ||
-      t.mainClassId === currentStudent?.classId ||
-      t.mainClassId === currentClass?.id ||
-      t.name === currentClass?.teacherName
-  );
-  const teacherDisplayName = currentTeacher?.name || currentClass?.teacherName || 'Giáo viên phụ trách';
-  const teacherPhoneDisplay = currentTeacher?.phone || currentClass?.teacherPhone || '0988.123.456';
+  const currentClass = hasAnyStudent
+    ? classes.find(
+        (c) =>
+          (currentStudent?.classId && (c.id === currentStudent.classId || c.code === currentStudent.classId)) ||
+          (currentStudent?.className && (c.name === currentStudent.className || c.code === currentStudent.className))
+      )
+    : undefined;
+  const currentTeacher = hasAnyStudent
+    ? teachers.find(
+        (t) =>
+          (currentClass?.teacherId && t.id === currentClass.teacherId) ||
+          (currentStudent?.classId && t.mainClassId === currentStudent.classId) ||
+          (currentClass?.id && t.mainClassId === currentClass.id) ||
+          (currentClass?.teacherName && t.name === currentClass.teacherName)
+      )
+    : undefined;
+  const teacherDisplayName = currentTeacher?.name || currentClass?.teacherName || (hasAnyStudent ? 'Chưa phân công' : 'Chưa có giáo viên');
+  const teacherPhoneDisplay = currentTeacher?.phone || currentClass?.teacherPhone || '';
 
   // =========================================================================
   // ĐỒNG BỘ ĐIỂM DANH TỪ GIÁO VIÊN: CHỈ LỌC CHO RIÊNG HỌC SINH HIỆN TẠI
   // =========================================================================
   const studentAttendanceHistory = useMemo(() => {
-    if (!currentStudent) return [];
+    if (!hasAnyStudent || !currentStudent || !currentStudent.id) return [];
     const stId = String(currentStudent.id || '').trim();
     const stName = String(currentStudent.name || '').trim().toLowerCase();
 
@@ -388,9 +431,10 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
 
     const seenDates = new Set<string>();
 
-    // 1. Duyệt qua tất cả các bản ghi điểm danh do Giáo viên đã lưu từ Firestore
+    // Duyệt qua tất cả các bản ghi điểm danh thực tế do Giáo viên đã lưu từ Firestore của trung tâm hiện tại
     (localAttendanceRecords || []).forEach((doc: any, docIdx: number) => {
       if (!doc) return;
+      if (activeCenterId && doc.centerId && doc.centerId !== activeCenterId) return;
       const sessionDate = doc.date || doc.sessionDate || (doc.createdAt ? String(doc.createdAt).slice(0, 10) : '');
       if (!sessionDate) return;
 
@@ -448,7 +492,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
             dateObj: dObj,
             dayOfWeek,
             formattedDate,
-            className: doc.className || currentClass?.name || currentStudent.className || 'Toán Nâng Cao 9A',
+            className: doc.className || currentClass?.name || currentStudent.className || 'Lớp học',
             classId: doc.classId || currentStudent.classId || '',
             teacherName: doc.teacherName || teacherDisplayName || 'Giáo viên phụ trách',
             status,
@@ -462,86 +506,43 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       }
     });
 
-    // 2. Dữ liệu lịch sử chuẩn cho học sinh hiện tại (nếu chưa có bản ghi Firestore tương ứng nào)
-    if (results.length === 0) {
-      const baseDays = [
-        { date: '2024-03-25', status: 'present' as const, note: 'Hăng hái phát biểu xây dựng bài, làm bài trắc nghiệm điểm tối đa' },
-        { date: '2024-03-23', status: 'present' as const, note: 'Tập trung cao độ, hoàn thành 100% phiếu bài tập trên lớp' },
-        { date: '2024-03-22', status: 'present' as const, note: 'Đi học đúng giờ, tác phong nghiêm túc' },
-        { date: '2024-03-20', status: 'present' as const, note: 'Có mặt đúng giờ, giải thích được bài hình học nâng cao' },
-        { date: '2024-03-18', status: 'present' as const, note: 'Tiếp thu bài nhanh, giúp đỡ bạn bè cùng bàn' },
-        { date: '2024-03-16', status: 'present' as const, note: 'Có mặt đúng giờ, chữ viết rõ ràng, sạch đẹp' },
-        { date: '2024-03-15', status: 'present' as const, note: 'Làm tốt bài kiểm tra 15 phút đầu giờ' },
-        { date: '2024-03-14', status: 'excused' as const, note: 'Vắng có phép (Gia đình gửi đơn xin phép đi khám răng)' },
-        { date: '2024-03-13', status: 'present' as const, note: 'Đúng giờ, hăng hái xung phong lên bảng' },
-        { date: '2024-03-11', status: 'present' as const, note: 'Có mặt đúng giờ' },
-        { date: '2024-03-09', status: 'present' as const, note: 'Có mặt đúng giờ, chuẩn bị bài chu đáo' },
-        { date: '2024-03-08', status: 'present' as const, note: 'Đúng giờ, không khí học tập tích cực' },
-        { date: '2024-03-07', status: 'excused' as const, note: 'Vắng có phép (Phụ huynh có đơn xin nghỉ khám mắt định kỳ)' },
-        { date: '2024-03-06', status: 'present' as const, note: 'Có mặt đúng giờ' },
-        { date: '2024-03-04', status: 'present' as const, note: 'Có mặt đúng giờ, làm bài tập đầy đủ' },
-        { date: '2024-03-02', status: 'present' as const, note: 'Đúng giờ, học tập chăm chỉ' },
-        { date: '2024-03-01', status: 'present' as const, note: 'Khởi động tháng 3 xuất sắc' },
-      ];
-
-      baseDays.forEach((b, idx) => {
-        const parts = b.date.split('-');
-        const dObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
-        const dayNames = ['Chủ Nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
-        results.push({
-          id: `base_att_${idx}`,
-          docId: `base_doc_${idx}`,
-          date: b.date,
-          dateObj: dObj,
-          dayOfWeek: dayNames[dObj.getDay()] || 'Thứ Hai',
-          formattedDate: `${parts[2]}/${parts[1]}/${parts[0]}`,
-          className: currentClass?.name || currentStudent.className || 'Toán Nâng Cao 9A',
-          classId: currentClass?.id || currentStudent.classId || 'cls_1',
-          teacherName: teacherDisplayName || 'Cô Nguyễn Thị Mai',
-          status: b.status,
-          rawStatus: b.status,
-          statusLabel: b.status === 'present' ? 'Có mặt đúng giờ' : 'Vắng có phép',
-          note: b.note,
-          shift: currentClass?.schedule || '18:00 - 20:00',
-          isRealtimeFromTeacher: false,
-        });
-      });
-    }
-
     // Sắp xếp ngày mới nhất lên đầu
     results.sort((a, b) => b.date.localeCompare(a.date));
     return results;
-  }, [localAttendanceRecords, currentStudent, currentClass, teacherDisplayName]);
+  }, [hasAnyStudent, localAttendanceRecords, currentStudent, currentClass, teacherDisplayName, activeCenterId]);
 
-  // Sĩ số học sinh thuộc lớp của học sinh hiện tại
+  // Sĩ số học sinh thực tế thuộc lớp của học sinh hiện tại (nếu trung tâm chưa có học sinh -> trả về mảng rỗng [])
   const classStudents = useMemo(() => {
+    if (!hasAnyStudent || !currentStudent || !currentStudent.id) return [];
+
     const cId = String(currentClass?.id || currentStudent?.classId || '').trim();
     const cName = String(currentClass?.name || currentStudent?.className || '').trim().toLowerCase();
     const cCode = String(currentClass?.code || currentClass?.classCode || '').trim().toLowerCase();
 
-    const list = (allStudents || []).filter((s) => {
+    const list = validStudents.filter((s) => {
       if (!s) return false;
       const sClassId = String(s.classId || '').trim();
       const sClassName = String(s.className || '').trim().toLowerCase();
       if (sClassId && cId && sClassId === cId) return true;
       if (sClassId && cCode && sClassId.toLowerCase() === cCode) return true;
-      if (sClassName && cName && (sClassName === cName || sClassName.includes(cName) || cName.includes(sClassName))) return true;
+      if (sClassName && cName && cName !== 'chưa phân lớp' && cName !== 'chưa xếp lớp' && (sClassName === cName || sClassName.includes(cName) || cName.includes(sClassName))) return true;
       if (sClassName && cCode && sClassName === cCode) return true;
       return false;
     });
 
     return list.length > 0 ? list : [currentStudent];
-  }, [allStudents, currentClass, currentStudent]);
+  }, [hasAnyStudent, validStudents, currentClass, currentStudent]);
 
-  const classStudentsCount = classStudents.length || 1;
+  const classStudentsCount = hasAnyStudent ? classStudents.length : 0;
 
   // Hàm chuẩn xác định một bản ghi điểm danh Firestore có thuộc về lớp học hoặc học sinh này không
   const isRecordForStudentOrClass = useCallback(
     (att: any) => {
-      if (!att) return false;
+      if (!hasAnyStudent || !att || !currentStudent?.id) return false;
+      if (activeCenterId && att.centerId && att.centerId !== activeCenterId) return false;
 
-      const stId = String(currentStudent?.id || '').trim();
-      const stName = String(currentStudent?.name || '').trim().toLowerCase();
+      const stId = String(currentStudent.id || '').trim();
+      const stName = String(currentStudent.name || '').trim().toLowerCase();
 
       // 1. Kiểm tra trực tiếp trong mảng danh sách học sinh của buổi điểm danh
       if (Array.isArray(att.records) && att.records.length > 0) {
@@ -558,7 +559,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       if (stId && att.studentId && String(att.studentId).trim() === stId) return true;
       if (stName && att.studentName && String(att.studentName).trim().toLowerCase() === stName) return true;
 
-      // 3. Khớp theo mã lớp (classId / classCode)
+      // 3. Khớp theo mã lớp (classId / classCode) - chỉ khớp khi có mã lớp hợp lệ
       const cId = String(currentClass?.id || currentStudent?.classId || '').trim();
       const cCode = String(currentClass?.code || currentClass?.classCode || '').trim().toLowerCase();
       if (att.classId) {
@@ -567,9 +568,9 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
         if (cCode && attCId.toLowerCase() === cCode) return true;
       }
 
-      // 4. Khớp theo tên lớp (className, chuẩn hóa không phân biệt hoa/thường hoặc tiền tố 'lớp')
+      // 4. Khớp theo tên lớp (chỉ khớp khi lớp có tên thực tế, không khớp 'Chưa phân lớp')
       const cName = String(currentClass?.name || currentStudent?.className || '').trim().toLowerCase();
-      if (att.className && cName) {
+      if (att.className && cName && cName !== 'chưa phân lớp' && cName !== 'chưa xếp lớp' && cName !== 'chưa có lớp') {
         const attCName = String(att.className).trim().toLowerCase();
         if (attCName === cName) return true;
         const cleanAtt = attCName.replace(/^lớp\s+/i, '').trim();
@@ -579,7 +580,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
 
       return false;
     },
-    [currentStudent, currentClass]
+    [hasAnyStudent, currentStudent, currentClass, activeCenterId]
   );
 
   // Danh sách các ngày trong tháng được chọn (từ 1 đến 28/29/30/31)
@@ -591,47 +592,16 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
     return Array.from({ length: daysCount }, (_, i) => i + 1);
   }, [selectedAttendanceMonth]);
 
-  // Danh sách bản ghi điểm danh thuộc tháng được chọn từ Firebase (chỉ đồng bộ dữ liệu lớp/học sinh hiện tại)
+  // Danh sách bản ghi điểm danh thuộc tháng được chọn từ Firebase (chỉ lấy dữ liệu thật từ Firestore của trung tâm hiện tại)
   const monthlyAttendanceRecords = useMemo(() => {
-    const records = (localAttendanceRecords || []).filter((doc: any) => {
+    if (!hasAnyStudent) return [];
+    return (localAttendanceRecords || []).filter((doc: any) => {
       if (!doc) return false;
       const docDate = doc.date || doc.sessionDate || (doc.createdAt ? String(doc.createdAt).slice(0, 10) : '');
       const matchMonth = docDate && (docDate.startsWith(selectedAttendanceMonth) || doc.sessionMonth === selectedAttendanceMonth);
       return matchMonth && isRecordForStudentOrClass(doc);
     });
-
-    // Mẫu chuẩn dự phòng khi chưa có bản ghi Firestore tương ứng trong tháng 10/2026 (khớp chuẩn 3 buổi theo hình ảnh giáo viên)
-    if (records.length === 0 && selectedAttendanceMonth === '2026-10') {
-      return [
-        {
-          id: 'att_2026_10_14',
-          classId: currentClass?.id || currentStudent.classId || 'class_toan_8',
-          className: currentClass?.name || currentStudent.className || 'Toán 8',
-          date: '2026-10-14',
-          sessionMonth: '2026-10',
-          records: [{ studentId: currentStudent.id, studentName: currentStudent.name, status: 'present' }],
-        },
-        {
-          id: 'att_2026_10_16',
-          classId: currentClass?.id || currentStudent.classId || 'class_toan_8',
-          className: currentClass?.name || currentStudent.className || 'Toán 8',
-          date: '2026-10-16',
-          sessionMonth: '2026-10',
-          records: [{ studentId: currentStudent.id, studentName: currentStudent.name, status: 'present' }],
-        },
-        {
-          id: 'att_2026_10_19',
-          classId: currentClass?.id || currentStudent.classId || 'class_toan_8',
-          className: currentClass?.name || currentStudent.className || 'Toán 8',
-          date: '2026-10-19',
-          sessionMonth: '2026-10',
-          records: [{ studentId: currentStudent.id, studentName: currentStudent.name, status: 'present' }],
-        },
-      ];
-    }
-
-    return records;
-  }, [localAttendanceRecords, selectedAttendanceMonth, currentStudent, currentClass, isRecordForStudentOrClass]);
+  }, [hasAnyStudent, localAttendanceRecords, selectedAttendanceMonth, isRecordForStudentOrClass]);
 
   // Danh sách các tháng có dữ liệu để phụ huynh dễ dàng chuyển đổi
   const availableAttendanceMonths = useMemo(() => {
@@ -643,16 +613,16 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       const d = r.date || r.sessionDate;
       if (d && d.length >= 7) set.add(d.slice(0, 7));
     });
-    set.add('2026-10');
     return Array.from(set).sort((a, b) => b.localeCompare(a));
   }, [localAttendanceRecords, isRecordForStudentOrClass]);
 
   // Xuất file Excel bảng điểm danh theo tháng
   const handleExportMonthlyCsv = () => {
+    if (!hasAnyStudent) return;
     const [year, month] = selectedAttendanceMonth.split('-');
     const daysHeader = daysInMonthList.join(',');
     let csv = `BẢNG ĐIỂM DANH THÁNG ${month}/${year}\n`;
-    csv += `Lớp: ${currentClass?.name || currentStudent.className || 'Toán 8'},Học sinh: ${currentStudent.name},SĐT PH: ${currentStudent.parentPhone || ''}\n\n`;
+    csv += `Lớp: ${currentClass?.name || currentStudent.className || 'Chưa phân lớp'},Học sinh: ${currentStudent.name},SĐT PH: ${currentStudent.parentPhone || ''}\n\n`;
     csv += `TT,TÊN HỌC SINH,SĐT PH,${daysHeader},Tổng buổi\n`;
 
     let attended = 0;
@@ -694,60 +664,54 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
     window.print();
   };
 
-  // Timeline comments from teachers
-  const [timelineRemarks, setTimelineRemarks] = useState<any[]>([]);
+  // Cập nhật timeline nhận xét giáo viên từ các buổi điểm danh thực tế (không tạo nhận xét ảo cho trung tâm mới)
+  const timelineRemarks = useMemo(() => {
+    if (!hasAnyStudent) {
+      return [];
+    }
 
-  // Cập nhật timeline nhận xét giáo viên từ các buổi điểm danh và dữ liệu thực tế
-  useEffect(() => {
     const commentsFromAttendance = studentAttendanceHistory
-      .filter((r) => r.note && r.note.trim().length > 3)
-      .slice(0, 5)
+      .filter((r) => r.note && r.note.trim().length > 0)
       .map((r, idx) => ({
         id: `att_comment_${r.id || idx}`,
         teacherName: r.teacherName,
         teacherRole: 'Giáo viên phụ trách',
-        subject: currentClass?.subject || 'Toán Học',
+        subject: currentClass?.subject || 'Bộ môn',
         date: r.formattedDate,
         time: r.shift || '18:00 - 20:00',
         content: r.note,
-        homeworkStatus: r.status === 'present' ? 'Có mặt đầy đủ & Tiếp thu tốt' : 'Nghỉ có phép',
+        homeworkStatus: r.status === 'present' ? 'Có mặt đầy đủ' : 'Nghỉ có phép',
         highlightBadge: r.status === 'present' ? 'Đánh Giá Buổi Học' : 'Ghi Nhận Vắng',
         badgeStyle: r.status === 'present' ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300',
       }));
 
-    const defaultRemarks = [
-      {
-        id: 'log-1',
+    if (
+      commentsFromAttendance.length === 0 &&
+      currentStudent.note &&
+      currentStudent.note.trim().length > 0 &&
+      currentStudent.note !== 'Học sinh mới tiếp nhận' &&
+      currentStudent.note !== 'Chưa có nhận xét.'
+    ) {
+      commentsFromAttendance.push({
+        id: `student_note_${currentStudent.id}`,
         teacherName: teacherDisplayName,
         teacherRole: 'GVCN Lớp',
-        subject: currentClass?.subject || 'Toán Nâng Cao',
-        date: '25/03/2024',
-        time: '19:45',
-        content: `Em ${currentStudent.name} hôm nay học tập rất hăng say, tích cực giơ tay phát biểu bài hình học nâng cao. Bài tập trắc nghiệm đạt 10/10. Phụ huynh nhớ động viên cháu tiếp tục phát huy!`,
-        homeworkStatus: 'Hoàn thành xuất sắc 100%',
-        highlightBadge: 'Khen Thưởng Xuất Sắc',
-        badgeStyle: 'bg-emerald-50 text-emerald-800 border-emerald-300',
-      },
-      {
-        id: 'log-2',
-        teacherName: 'Thầy Lê Minh Đức',
-        teacherRole: 'Giáo viên bộ môn',
-        subject: 'Ngữ Văn 9',
-        date: '22/03/2024',
-        time: '18:30',
-        content: `Bài viết văn nghị luận của em có luận điểm sáng tạo, dẫn chứng thực tế phong phú. Cần chú ý rèn lại chữ viết gọn gàng hơn và căn lề bài làm cẩn thận hơn.`,
-        homeworkStatus: 'Đã nộp đúng hạn - Điểm 8.5/10',
-        highlightBadge: 'Góp Ý Rèn Luyện',
+        subject: currentClass?.subject || 'Bộ môn',
+        date: new Date().toLocaleDateString('vi-VN'),
+        time: currentClass?.schedule || 'Ghi chú lớp học',
+        content: currentStudent.note,
+        homeworkStatus: 'Ghi chú học tập',
+        highlightBadge: 'Nhận Xét Học Sinh',
         badgeStyle: 'bg-blue-50 text-blue-800 border-blue-300',
-      },
-    ];
+      });
+    }
 
-    setTimelineRemarks([...commentsFromAttendance, ...defaultRemarks]);
-  }, [studentAttendanceHistory, currentStudent, currentClass, teacherDisplayName]);
+    return commentsFromAttendance;
+  }, [hasAnyStudent, studentAttendanceHistory, currentStudent, currentClass, teacherDisplayName]);
 
   // 1. Chỉ lấy những bài tập được giao cho học sinh này hoặc lớp của học sinh này (không hiển thị bài tập lớp khác)
   const studentAssignments = useMemo(() => {
-    if (!currentStudent || !currentStudent.id) return [];
+    if (!hasAnyStudent || !currentStudent || !currentStudent.id) return [];
 
     const stId = String(currentStudent.id || '');
     const stClassId = String(currentStudent.classId || currentClass?.id || '').trim().toLowerCase();
@@ -917,17 +881,39 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
         <div className="absolute right-1/3 -bottom-16 w-80 h-80 rounded-full bg-white/10 blur-3xl pointer-events-none" />
 
         <div className="relative z-10 space-y-5">
-          {/* Top row: Brand ribbon & Student Switcher for multi-child demo */}
+          {/* Top row: Brand ribbon & Student Switcher */}
           <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/20">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/25 px-3 py-1 text-xs font-black text-amber-200 border border-amber-300/40 tracking-wide uppercase">
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                Sổ Liên Lạc Điện Tử &bull; Trung Tâm Học Giỏi
+                Sổ Liên Lạc Điện Tử &bull; {centerName}
               </span>
               <span className="text-[11px] font-mono font-bold bg-white/20 px-2.5 py-1 rounded-lg text-white">
-                Niên khóa 2023 - 2024
+                Năm học {new Date().getFullYear()}
               </span>
             </div>
+
+            {validStudents.length > 1 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-blue-100">Chọn học sinh:</span>
+                <select
+                  value={currentStudent.id}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setActiveStudentId(nextId);
+                    const found = validStudents.find((s) => s.id === nextId);
+                    if (found && onSelectStudent) onSelectStudent(found);
+                  }}
+                  className="rounded-xl bg-white/20 border border-white/30 px-3 py-1.5 text-xs font-bold text-white focus:outline-hidden cursor-pointer"
+                >
+                  {validStudents.map((st) => (
+                    <option key={st.id} value={st.id} className="text-slate-800">
+                      {st.name} ({st.className || 'Chưa phân lớp'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Main profile row */}
@@ -936,42 +922,53 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
             <div className="flex items-start sm:items-center gap-4 sm:gap-5">
               <div className="relative">
                 <AccountAvatar
-                  name={currentStudent?.name || 'Học sinh'}
+                  name={hasAnyStudent ? currentStudent.name : 'HS'}
                   role="student"
                   size="2xl"
                   shape="rounded"
                   className="ring-4 ring-white/40 shadow-xl shrink-0"
                 />
-                <span className="absolute -bottom-1 -right-1 rounded-full bg-[#00A86B] p-1.5 ring-2 ring-white" title="Trạng thái: Đang theo học">
-                  <Check className="w-3.5 h-3.5 text-white" />
-                </span>
+                {hasAnyStudent && (
+                  <span className="absolute -bottom-1 -right-1 rounded-full bg-[#00A86B] p-1.5 ring-2 ring-white" title="Trạng thái: Đang theo học">
+                    <Check className="w-3.5 h-3.5 text-white" />
+                  </span>
+                )}
               </div>
 
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-                    {currentStudent.name}
+                    {hasAnyStudent ? currentStudent.name : 'Chưa có học sinh trong trung tâm'}
                   </h1>
-                  <span className="font-mono text-xs font-bold bg-white/20 px-2.5 py-0.5 rounded-md text-blue-100 border border-white/20">
-                    Mã HS: {currentStudent.id.toUpperCase()}
-                  </span>
+                  {hasAnyStudent && (
+                    <span className="font-mono text-xs font-bold bg-white/20 px-2.5 py-0.5 rounded-md text-blue-100 border border-white/20">
+                      Mã HS: {(currentStudent.studentCode || currentStudent.id).toUpperCase()}
+                    </span>
+                  )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-blue-100 font-medium">
-                  <span className="font-bold flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-lg">
-                    <GraduationCap className="w-4 h-4 text-amber-300" />
-                    Lớp: <strong className="text-white font-extrabold">{currentStudent.className}</strong>
-                  </span>
-                  <span>&bull;</span>
-                  <span className="flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-lg">
-                    <School className="w-4 h-4 text-emerald-300" />
-                    GVCN: <strong className="text-white font-extrabold">{teacherDisplayName}</strong> ({teacherPhoneDisplay})
-                  </span>
-                  <span>&bull;</span>
-                  <span>
-                    Phụ huynh: <strong className="text-white">{currentStudent.parentName}</strong>
-                  </span>
-                </div>
+                {hasAnyStudent ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-blue-100 font-medium">
+                    <span className="font-bold flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-lg">
+                      <GraduationCap className="w-4 h-4 text-amber-300" />
+                      Lớp: <strong className="text-white font-extrabold">{currentClass?.name || currentStudent.className || 'Chưa phân lớp'}</strong>
+                    </span>
+                    <span>&bull;</span>
+                    <span className="flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-lg">
+                      <School className="w-4 h-4 text-emerald-300" />
+                      GVCN: <strong className="text-white font-extrabold">{teacherDisplayName}</strong>
+                      {teacherPhoneDisplay ? ` (${teacherPhoneDisplay})` : ''}
+                    </span>
+                    <span>&bull;</span>
+                    <span>
+                      Phụ huynh: <strong className="text-white">{currentStudent.parentName || 'Chưa cập nhật'}</strong>
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-blue-100 font-medium">
+                    Trung tâm mới khởi tạo chưa có dữ liệu học sinh. Vui lòng thêm Lớp học và Học sinh ở mục Quản lý để theo dõi Sổ Liên Lạc &amp; Điểm Danh.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -979,26 +976,27 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
             <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
               <button
                 type="button"
+                disabled={!hasAnyStudent}
                 onClick={() => setIsLeaveModalOpen(true)}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-2 rounded-2xl bg-[#F39C12] hover:bg-amber-600 active:scale-95 text-white font-extrabold text-xs sm:text-sm px-4 py-3 shadow-lg transition-all"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 rounded-2xl bg-[#F39C12] hover:bg-amber-600 active:scale-95 disabled:opacity-50 disabled:pointer-events-none text-white font-extrabold text-xs sm:text-sm px-4 py-3 shadow-lg transition-all"
               >
                 <Send className="w-4 h-4" />
                 <span>Gửi Đơn Xin Phép Nghỉ Học</span>
               </button>
 
-              <a
-                href="tel:0912345678"
-                className="flex-1 sm:flex-none flex items-center justify-center gap-2 rounded-2xl bg-white/20 hover:bg-white/30 text-white font-bold text-xs sm:text-sm px-4 py-3 border border-white/30 backdrop-blur-xs transition-all"
-              >
-                <PhoneCall className="w-4 h-4 text-amber-300" />
-                <span>Gọi Hotline Trung Tâm</span>
-              </a>
+              {teacherPhoneDisplay && (
+                <a
+                  href={`tel:${teacherPhoneDisplay.replace(/[^0-9]/g, '')}`}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 rounded-2xl bg-white/20 hover:bg-white/30 text-white font-bold text-xs sm:text-sm px-4 py-3 border border-white/30 backdrop-blur-xs transition-all"
+                >
+                  <PhoneCall className="w-4 h-4 text-amber-300" />
+                  <span>Gọi GVCN ({teacherPhoneDisplay})</span>
+                </a>
+              )}
             </div>
           </div>
         </div>
       </div>
-
-
 
       {/* ========================================================================= */}
       {/* 1. NỘI DUNG MENU ĐIỂM DANH: LỊCH ĐIỂM DANH & THEO DÕI CHUYÊN CẦN          */}
@@ -1013,7 +1011,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                 BẢNG ĐIỂM DANH THÁNG {selectedAttendanceMonth.split('-')[1]}/{selectedAttendanceMonth.split('-')[0]}
               </h2>
               <p className="text-xs text-slate-500 mt-1">
-                Lớp: <strong className="text-slate-800 font-extrabold">{currentClass?.name || currentStudent.className || 'Toán 8'}</strong> &bull; Sĩ số: <strong className="text-[#0072B5] font-extrabold">{classStudentsCount} HS</strong> &bull; Đã lưu điểm danh trên Firebase: <strong className="text-emerald-700 font-extrabold">{monthlyAttendanceRecords.length} buổi</strong>
+                Lớp: <strong className="text-slate-800 font-extrabold">{hasAnyStudent ? (currentClass?.name || currentStudent.className || 'Chưa phân lớp') : 'Chưa có lớp'}</strong> &bull; Sĩ số: <strong className="text-[#0072B5] font-extrabold">{classStudentsCount} HS</strong> &bull; Đã lưu điểm danh trên Firebase: <strong className="text-emerald-700 font-extrabold">{monthlyAttendanceRecords.length} buổi</strong>
               </p>
             </div>
 
@@ -1034,8 +1032,9 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
               {/* Nút Xuất File Excel (CSV) */}
               <button
                 type="button"
+                disabled={!hasAnyStudent}
                 onClick={handleExportMonthlyCsv}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-[#00A86B] border border-emerald-300 shadow-2xs transition-all cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 disabled:pointer-events-none text-[#00A86B] border border-emerald-300 shadow-2xs transition-all cursor-pointer"
                 title="Xuất bảng điểm danh tháng sang file Excel"
               >
                 <Download className="w-4 h-4 text-[#00A86B]" />
@@ -1045,8 +1044,9 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
               {/* Nút In Bảng */}
               <button
                 type="button"
+                disabled={!hasAnyStudent}
                 onClick={handlePrintAttendanceTable}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 shadow-2xs transition-all cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 disabled:opacity-50 disabled:pointer-events-none text-slate-700 border border-slate-300 shadow-2xs transition-all cursor-pointer"
                 title="In bảng điểm danh tháng"
               >
                 <Printer className="w-4 h-4 text-slate-600" />
@@ -1104,86 +1104,97 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-300 font-medium text-slate-800">
-                  {(() => {
-                    let attendedCount = 0;
-                    return (
-                      <tr className="hover:bg-slate-50/80 transition-colors divide-x divide-slate-300">
-                        {/* TT */}
-                        <td className="py-2 px-2 sm:sticky sm:left-0 bg-white z-10 font-bold text-slate-600">
-                          1
-                        </td>
+                  {!hasAnyStudent ? (
+                    <tr>
+                      <td
+                        colSpan={3 + daysInMonthList.length + 1}
+                        className="py-10 px-4 text-center text-slate-400 text-xs font-medium bg-white"
+                      >
+                        Chưa có dữ liệu học sinh trong trung tâm. Khi trung tâm thêm học sinh và giáo viên thực hiện điểm danh, dữ liệu sẽ hiển thị tại đây.
+                      </td>
+                    </tr>
+                  ) : (
+                    (() => {
+                      let attendedCount = 0;
+                      return (
+                        <tr className="hover:bg-slate-50/80 transition-colors divide-x divide-slate-300">
+                          {/* TT */}
+                          <td className="py-2 px-2 sm:sticky sm:left-0 bg-white z-10 font-bold text-slate-600">
+                            1
+                          </td>
 
-                        {/* TÊN HỌC SINH */}
-                        <td className="py-2 px-3 text-left sm:sticky sm:left-10 bg-white z-10 shadow-xs font-bold text-slate-800">
-                          <div className="truncate max-w-[150px] sm:max-w-[170px]" title={currentStudent.name}>
-                            {currentStudent.name}
-                          </div>
-                        </td>
+                          {/* TÊN HỌC SINH */}
+                          <td className="py-2 px-3 text-left sm:sticky sm:left-10 bg-white z-10 shadow-xs font-bold text-slate-800">
+                            <div className="truncate max-w-[150px] sm:max-w-[170px]" title={currentStudent.name}>
+                              {currentStudent.name}
+                            </div>
+                          </td>
 
-                        {/* SĐT PH */}
-                        <td className="py-2 px-2 text-left sm:sticky sm:left-[210px] bg-white z-10 shadow-xs text-slate-600 text-[11px]">
-                          {currentStudent.parentPhone || '0359393564'}
-                        </td>
+                          {/* SĐT PH */}
+                          <td className="py-2 px-2 text-left sm:sticky sm:left-[210px] bg-white z-10 shadow-xs text-slate-600 text-[11px]">
+                            {currentStudent.parentPhone || '—'}
+                          </td>
 
-                        {/* Các cột ngày từ 1 đến 31 (chuẩn theo hình ảnh) */}
-                        {daysInMonthList.map((d) => {
-                          const dStr = d.toString().padStart(2, '0');
-                          const iso = `${selectedAttendanceMonth}-${dStr}`;
-                          const rec = monthlyAttendanceRecords.find(
-                            (r: any) => (r.date === iso || r.sessionDate === iso) && isRecordForStudentOrClass(r)
-                          );
-                          const sRec = rec?.records?.find(
-                            (r: any) =>
-                              (r.studentId && currentStudent.id && String(r.studentId).trim() === String(currentStudent.id).trim()) ||
-                              (r.studentName && currentStudent.name && r.studentName.trim().toLowerCase() === currentStudent.name.trim().toLowerCase())
-                          ) || (rec?.studentId === currentStudent.id ? rec : null);
+                          {/* Các cột ngày từ 1 đến 31 */}
+                          {daysInMonthList.map((d) => {
+                            const dStr = d.toString().padStart(2, '0');
+                            const iso = `${selectedAttendanceMonth}-${dStr}`;
+                            const rec = monthlyAttendanceRecords.find(
+                              (r: any) => (r.date === iso || r.sessionDate === iso) && isRecordForStudentOrClass(r)
+                            );
+                            const sRec = rec?.records?.find(
+                              (r: any) =>
+                                (r.studentId && currentStudent.id && String(r.studentId).trim() === String(currentStudent.id).trim()) ||
+                                (r.studentName && currentStudent.name && r.studentName.trim().toLowerCase() === currentStudent.name.trim().toLowerCase())
+                            ) || (rec?.studentId === currentStudent.id ? rec : null);
 
-                          let marker = '';
-                          let markerClass = '';
-                          let titleText = `Ngày ${dStr}: Chưa có dữ liệu`;
+                            let marker = '';
+                            let markerClass = '';
+                            let titleText = `Ngày ${dStr}: Chưa có dữ liệu`;
 
-                          if (sRec) {
-                            const st = String(sRec.status || '').toLowerCase();
-                            if (st === 'present' || st === 'late' || st.includes('có mặt')) {
-                              attendedCount++;
-                              marker = 'X';
-                              markerClass = 'font-black text-[#0B486B] text-xs';
-                              titleText = `Ngày ${dStr}: Có mặt (tính tiền)`;
-                            } else if (st === 'excused' || st.includes('phép')) {
-                              marker = 'P';
-                              markerClass = 'font-bold text-[#F39C12] text-[11px]';
-                              titleText = `Ngày ${dStr}: Vắng có phép`;
-                            } else if (st === 'absent' || st === 'unexcused' || st.includes('không phép')) {
-                              marker = 'K';
-                              markerClass = 'font-bold text-[#E74C3C] text-[11px]';
-                              titleText = `Ngày ${dStr}: Vắng không phép`;
+                            if (sRec) {
+                              const st = String(sRec.status || '').toLowerCase();
+                              if (st === 'present' || st === 'late' || st.includes('có mặt')) {
+                                attendedCount++;
+                                marker = 'X';
+                                markerClass = 'font-black text-[#0B486B] text-xs';
+                                titleText = `Ngày ${dStr}: Có mặt (tính tiền)`;
+                              } else if (st === 'excused' || st.includes('phép')) {
+                                marker = 'P';
+                                markerClass = 'font-bold text-[#F39C12] text-[11px]';
+                                titleText = `Ngày ${dStr}: Vắng có phép`;
+                              } else if (st === 'absent' || st === 'unexcused' || st.includes('không phép')) {
+                                marker = 'K';
+                                markerClass = 'font-bold text-[#E74C3C] text-[11px]';
+                                titleText = `Ngày ${dStr}: Vắng không phép`;
+                              }
                             }
-                          }
 
-                          return (
-                            <td
-                              key={d}
-                              className={`py-2 px-1 text-center select-none ${
-                                marker === 'X' ? 'bg-blue-50/30' : ''
-                              }`}
-                              title={titleText}
-                            >
-                              {marker ? (
-                                <span className={markerClass}>{marker}</span>
-                              ) : (
-                                <span className="text-slate-300"></span>
-                              )}
-                            </td>
-                          );
-                        })}
+                            return (
+                              <td
+                                key={d}
+                                className={`py-2 px-1 text-center select-none ${
+                                  marker === 'X' ? 'bg-blue-50/30' : ''
+                                }`}
+                                title={titleText}
+                              >
+                                {marker ? (
+                                  <span className={markerClass}>{marker}</span>
+                                ) : (
+                                  <span className="text-slate-300"></span>
+                                )}
+                              </td>
+                            );
+                          })}
 
-                        {/* Tổng buổi */}
-                        <td className="py-2 px-2 text-center font-bold text-[#0072B5] bg-blue-50/20">
-                          {attendedCount}
-                        </td>
-                      </tr>
-                    );
-                  })()}
+                          {/* Tổng buổi */}
+                          <td className="py-2 px-2 text-center font-bold text-[#0072B5] bg-blue-50/20">
+                            {attendedCount}
+                          </td>
+                        </tr>
+                      );
+                    })()
+                  )}
                 </tbody>
                 {/* Hàng Tổng cộng lớp */}
                 <tfoot>
@@ -1280,6 +1291,11 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
             </div>
 
             {/* Timeline Stream */}
+            {timelineRemarks.length === 0 ? (
+              <div className="py-10 text-center text-slate-400 text-xs font-medium">
+                Chưa có nhận xét nào từ giáo viên cho học sinh này.
+              </div>
+            ) : (
             <div className="mt-5 relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-3 before:bottom-3 before:w-1 before:bg-blue-100">
               {timelineRemarks.map((remark) => (
                 <div key={remark.id} className="relative group">
@@ -1340,7 +1356,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                         <div className="flex items-center justify-between">
                           <span className="font-black text-xs text-[#00A86B] flex items-center gap-1">
                             <HeartHandshake className="w-3.5 h-3.5" />
-                            Phản hồi của phụ huynh (Bạch Duyên Thị Hoa):
+                            Phản hồi của phụ huynh ({currentStudent.parentName || 'Phụ huynh'}):
                           </span>
                           <span className="text-[10px] text-emerald-700 font-semibold">Đã gửi tới GV</span>
                         </div>
@@ -1374,6 +1390,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                 </div>
               ))}
             </div>
+            )}
           </div>
         </div>
       )}

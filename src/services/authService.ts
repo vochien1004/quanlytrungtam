@@ -32,11 +32,33 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
+  deleteUser,
   User
 } from 'firebase/auth';
-import { db, auth, getSecondaryAuth } from '../firebase/config';
+import { db, auth, getSecondaryAuth, getSecondaryDb } from '../firebase/config';
 import { TeacherItem, StudentItem } from '../data/mockData';
 import { ensureAdminAuthSession } from './firebaseService';
+import type { UserProfile, UserProfileRole, UserProfileStatus } from '../types/firestoreSchema';
+
+/**
+ * Lấy Firestore instance đã xác thực quyền Super Admin trên Secondary App
+ * Dùng khi khởi tạo tài khoản/trung tâm mới (khi user mới chưa có document `/users/{uid}` trên Firestore,
+ * tránh lỗi "Missing or insufficient permissions" từ Security Rules mà không làm ảnh hưởng phiên `auth` chính).
+ */
+async function getPrivilegedDb() {
+  try {
+    const secAuth = getSecondaryAuth();
+    if (!secAuth.currentUser || secAuth.currentUser.email !== 'admin@tthocgioi.edu.vn') {
+      await signInWithEmailAndPassword(secAuth, 'admin@tthocgioi.edu.vn', 'Admin@123456');
+    }
+    return getSecondaryDb();
+  } catch (err) {
+    console.warn('getPrivilegedDb fallback to primary db:', err);
+    return db;
+  }
+}
+
+export type { UserProfile, UserProfileRole, UserProfileStatus };
 
 export type SystemRole = 'super_admin' | 'center_admin' | 'teacher' | 'parent';
 
@@ -53,6 +75,8 @@ export interface UserAccount {
   name: string;
   fullName?: string;
   email?: string;
+  realEmail?: string;
+  authEmail?: string;
   phone?: string;
   avatar?: string;
   status: 'active' | 'locked';
@@ -83,6 +107,8 @@ export interface NewUserAccountData {
   name?: string;
   fullName?: string;
   email?: string;
+  realEmail?: string;
+  authEmail?: string;
   phone?: string;
   avatar?: string;
   status?: 'active' | 'locked';
@@ -110,6 +136,432 @@ export interface LoginResult {
 
 const STORAGE_SESSION_KEY = 'tt_hocgioi_current_user';
 export const DEFAULT_CENTER_ID = 'HG01';
+
+// ============================================================================
+// KIẾN TRÚC QUẢN LÝ NGƯỜI DÙNG ĐA TRUNG TÂM (MULTI-TENANT AUTH & SUBCOLLECTION)
+// Thủ thuật Fake Email: `${username}@${centerId}.app.com`
+// Đường dẫn lưu trữ: `centers/{centerId}/users/{uid}`
+// ============================================================================
+
+/**
+ * Hàm tiện ích tạo địa chỉ Email ảo (Fake Email) chuẩn cho từng Trung tâm:
+ * Công thức: `${username}@${centerId}.app.com`
+ */
+export function buildFakeEmail(centerId: string, username: string): string {
+  const cleanUsername = normalizeUsername(username);
+  const cleanCenterId = (centerId || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return `${cleanUsername}@${cleanCenterId}.app.com`;
+}
+
+/**
+ * 1. Hàm đăng ký người dùng bằng Username (Thủ thuật Fake Email)
+ * - Tự động tạo email ảo theo công thức: `const fakeEmail = `${username}@${centerId}.app.com``
+ * - Gọi `createUserWithEmailAndPassword` bằng `fakeEmail` và `password`
+ * - Lưu thông tin `profileData` (bao gồm cả trường `username`) vào Firestore tại `centers/{centerId}/users/{uid}`
+ */
+export async function registerUser(
+  centerId: string,
+  username: string,
+  password: string,
+  profileData: Omit<UserProfile, 'uid' | 'centerId' | 'username' | 'email' | 'createdAt' | 'updatedAt'> & {
+    email?: string;
+    status?: UserProfileStatus;
+  }
+): Promise<UserProfile> {
+  const cleanCenterId = (centerId || '').trim();
+  const cleanUsername = normalizeUsername(username);
+  const cleanPassword = (password || '').trim();
+
+  if (!cleanCenterId) {
+    throw new Error('Mã trung tâm (centerId) không được để trống.');
+  }
+  if (!cleanUsername) {
+    throw new Error('Tên đăng nhập (username) không được để trống hoặc chứa ký tự không hợp lệ.');
+  }
+  if (!cleanPassword || cleanPassword.length < 6) {
+    throw new Error('Mật khẩu phải có ít nhất 6 ký tự.');
+  }
+
+  // Tự động tạo email ảo theo công thức: `${username}@${centerId}.app.com`
+  const fakeEmail = `${cleanUsername}@${cleanCenterId.toLowerCase()}.app.com`;
+
+  try {
+    // Sử dụng Secondary Auth nếu đang có Admin đăng nhập để tránh làm mất phiên hiện tại,
+    // hoặc dùng trực tiếp `auth` nếu người dùng tự đăng ký mới.
+    const targetAuth = auth.currentUser ? getSecondaryAuth() : auth;
+    const userCredential = await createUserWithEmailAndPassword(targetAuth, fakeEmail, cleanPassword);
+    const uid = userCredential.user.uid;
+
+    if (targetAuth !== auth) {
+      await signOut(targetAuth).catch(() => {});
+    }
+
+    const nowIso = new Date().toISOString();
+    const newUserProfile: UserProfile = {
+      ...profileData,
+      uid,
+      centerId: cleanCenterId,
+      username: cleanUsername,
+      email: profileData.email?.trim() || fakeEmail,
+      fullName: profileData.fullName?.trim() || profileData.displayName?.trim() || cleanUsername,
+      displayName: profileData.displayName?.trim() || profileData.fullName?.trim() || cleanUsername,
+      role: profileData.role || 'teacher',
+      status: profileData.status || 'active',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    // Lưu thông tin profileData (bao gồm trường username) vào Firestore tại `centers/{centerId}/users/{uid}`
+    let writeDb = db;
+    try {
+      await setDoc(doc(writeDb, 'centers', cleanCenterId, 'users', uid), {
+        ...newUserProfile,
+        fakeEmail,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch {
+      writeDb = await getPrivilegedDb();
+      await setDoc(doc(writeDb, 'centers', cleanCenterId, 'users', uid), {
+        ...newUserProfile,
+        fakeEmail,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Đồng bộ thêm với bảng định tuyến & subcollection chuyên biệt (teachers / students) của hệ thống
+    try {
+      await setDoc(
+        doc(writeDb, 'users', uid),
+        {
+          uid,
+          id: uid,
+          centerId: cleanCenterId,
+          username: cleanUsername,
+          email: fakeEmail,
+          contactEmail: newUserProfile.email,
+          fullName: newUserProfile.fullName,
+          displayName: newUserProfile.displayName,
+          name: newUserProfile.fullName,
+          role: newUserProfile.role,
+          status: newUserProfile.status === 'active' ? 'active' : 'locked',
+          phone: newUserProfile.phone || '',
+          avatar: newUserProfile.avatar || '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      await setDoc(
+        doc(writeDb, 'usernames', cleanUsername),
+        {
+          email: fakeEmail,
+          centerId: cleanCenterId,
+          uid,
+          role: newUserProfile.role,
+          username: cleanUsername,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      if (newUserProfile.role === 'teacher') {
+        await setDoc(
+          doc(writeDb, 'centers', cleanCenterId, 'teachers', uid),
+          {
+            ...newUserProfile,
+            id: uid,
+            name: newUserProfile.fullName,
+            teacherCode: newUserProfile.teacherCode || `GV-${Date.now().toString().slice(-3)}`,
+            subject: newUserProfile.subject || 'Toán học',
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } else if (newUserProfile.role === 'student' || newUserProfile.role === 'parent') {
+        await setDoc(
+          doc(writeDb, 'centers', cleanCenterId, 'students', uid),
+          {
+            ...newUserProfile,
+            id: uid,
+            name: newUserProfile.studentName || newUserProfile.fullName,
+            studentCode: newUserProfile.studentCode || `HS-${Date.now().toString().slice(-3)}`,
+            parentName: newUserProfile.parentName || newUserProfile.fullName,
+            parentPhone: newUserProfile.parentPhone || newUserProfile.phone || '',
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    } catch (syncErr) {
+      console.warn('Lưu ý đồng bộ bảng phụ khi tạo UserProfile:', syncErr);
+    }
+
+    return newUserProfile;
+  } catch (error: any) {
+    const code = error?.code || '';
+    if (code === 'auth/email-already-in-use') {
+      throw new Error(`Tên đăng nhập "${cleanUsername}" đã tồn tại tại trung tâm "${cleanCenterId}". Vui lòng chọn username khác!`);
+    }
+    if (code === 'auth/invalid-email') {
+      throw new Error('Tên đăng nhập hoặc mã trung tâm chứa ký tự không hợp lệ để tạo định danh!');
+    }
+    if (code === 'auth/weak-password') {
+      throw new Error('Mật khẩu quá yếu. Vui lòng đặt mật khẩu tối thiểu 6 ký tự!');
+    }
+    if (code === 'auth/operation-not-allowed') {
+      throw new Error('Phương thức xác thực Email/Password hiện chưa được bật trên Firebase.');
+    }
+    throw new Error(error?.message || 'Đã xảy ra lỗi khi đăng ký tài khoản người dùng.');
+  }
+}
+
+/**
+ * 1B. Đăng ký tài khoản người dùng mới cho một Trung tâm (Hỗ trợ cả Email hoặc Username)
+ */
+export async function registerUserForCenter(
+  centerId: string,
+  emailOrUsername: string,
+  password: string,
+  profileData: Omit<UserProfile, 'uid' | 'centerId' | 'username' | 'email' | 'createdAt' | 'updatedAt'> & {
+    username?: string;
+    email?: string;
+    status?: UserProfileStatus;
+  }
+): Promise<UserProfile> {
+  const rawInput = (emailOrUsername || '').trim();
+  const extractedUsername = rawInput.includes('@')
+    ? normalizeUsername(rawInput.split('@')[0])
+    : normalizeUsername(rawInput);
+
+  return registerUser(centerId, profileData.username || extractedUsername, password, {
+    ...profileData,
+    email: rawInput.includes('@') ? rawInput.toLowerCase() : profileData.email,
+  });
+}
+
+/**
+ * 2. Hàm đăng nhập bằng `centerId`, `username`, `password` (Thủ thuật Fake Email)
+ * - Tự động tạo lại `fakeEmail = ${username}@${centerId}.app.com`
+ * - Gọi `signInWithEmailAndPassword`
+ * - Lấy thông tin user từ Firestore tại `centers/{centerId}/users/{uid}` và trả về
+ */
+export async function loginCenterUserByUsername(
+  centerId: string,
+  username: string,
+  password: string
+): Promise<UserProfile & UserAccount> {
+  const cleanCenterId = (centerId || '').trim();
+  const cleanUsername = normalizeUsername(username);
+  const cleanPassword = (password || '').trim();
+
+  if (!cleanCenterId) {
+    throw new Error('Vui lòng cung cấp mã Trung tâm (centerId).');
+  }
+  if (!cleanUsername || !cleanPassword) {
+    throw new Error('Vui lòng nhập đầy đủ Tên đăng nhập (username) và Mật khẩu.');
+  }
+
+  // Tự động tạo lại fakeEmail theo đúng công thức: `${username}@${centerId}.app.com`
+  const fakeEmail = `${cleanUsername}@${cleanCenterId.toLowerCase()}.app.com`;
+  const legacyEmail = `${cleanUsername}@${cleanCenterId.toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`;
+  const passToSync = cleanPassword.length >= 6 ? cleanPassword : `${cleanPassword}123456`;
+
+  try {
+    // Bước 1: Xác thực trên Firebase Authentication bằng fakeEmail
+    let userCredential;
+    try {
+      userCredential = await signInWithEmailAndPassword(auth, fakeEmail, cleanPassword);
+    } catch (primaryAuthErr: any) {
+      // Thử với mật khẩu chuẩn hóa (>= 6 ký tự) hoặc email hệ thống cũ (.hocgioi.edu.vn)
+      const candidates: Array<[string, string]> = [];
+      if (cleanPassword.length < 6) {
+        candidates.push([fakeEmail, passToSync]);
+      }
+      candidates.push([legacyEmail, cleanPassword]);
+      if (cleanPassword.length < 6) {
+        candidates.push([legacyEmail, passToSync]);
+      }
+
+      let resolvedCred = null;
+      for (const [candidateEmail, candidatePass] of candidates) {
+        try {
+          resolvedCred = await signInWithEmailAndPassword(auth, candidateEmail, candidatePass);
+          if (resolvedCred) break;
+        } catch {}
+      }
+
+      if (!resolvedCred) {
+        throw primaryAuthErr;
+      }
+      userCredential = resolvedCred;
+    }
+
+    const uid = userCredential.user.uid;
+
+    // Bước 2: Lấy thông tin chi tiết của user từ Firestore tại `centers/{centerId}/users/{uid}`
+    const userDocRef = doc(db, 'centers', cleanCenterId, 'users', uid);
+    const userDocSnap = await getDoc(userDocRef);
+
+    let profileData: Record<string, any> | null = null;
+
+    if (userDocSnap.exists()) {
+      profileData = userDocSnap.data();
+    } else {
+      // Dự phòng tương thích ngược: Nếu tài khoản được tạo ở subcollection teachers/students trước đó,
+      // tự động đọc và đồng bộ sang `centers/{centerId}/users/{uid}`
+      const [teacherSnap, studentSnap, rootUserSnap] = await Promise.all([
+        getDoc(doc(db, 'centers', cleanCenterId, 'teachers', uid)).catch(() => null),
+        getDoc(doc(db, 'centers', cleanCenterId, 'students', uid)).catch(() => null),
+        getDoc(doc(db, 'users', uid)).catch(() => null),
+      ]);
+
+      if (teacherSnap && teacherSnap.exists()) {
+        const tData = teacherSnap.data();
+        profileData = {
+          ...tData,
+          uid,
+          centerId: cleanCenterId,
+          username: tData.username || cleanUsername,
+          email: tData.email || fakeEmail,
+          fullName: tData.fullName || tData.name || cleanUsername,
+          role: 'teacher',
+          status: tData.status === 'inactive' ? 'inactive' : 'active',
+        };
+      } else if (studentSnap && studentSnap.exists()) {
+        const sData = studentSnap.data();
+        profileData = {
+          ...sData,
+          uid,
+          centerId: cleanCenterId,
+          username: sData.username || cleanUsername,
+          email: sData.parentEmail || sData.email || fakeEmail,
+          fullName: sData.parentName || sData.name || cleanUsername,
+          role: 'parent',
+          status: sData.status === 'dropped' ? 'inactive' : 'active',
+        };
+      } else if (rootUserSnap && rootUserSnap.exists() && rootUserSnap.data()?.centerId === cleanCenterId) {
+        const rData = rootUserSnap.data();
+        profileData = {
+          ...rData,
+          uid,
+          centerId: cleanCenterId,
+          username: rData.username || cleanUsername,
+          email: rData.email || fakeEmail,
+          fullName: rData.fullName || rData.displayName || rData.name || cleanUsername,
+          role: rData.role || 'teacher',
+          status: rData.status || 'active',
+        };
+      }
+
+      if (profileData) {
+        await setDoc(
+          userDocRef,
+          {
+            ...profileData,
+            lastLoginAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        ).catch(() => {});
+      }
+    }
+
+    if (!profileData) {
+      await signOut(auth).catch(() => {});
+      throw new Error(
+        `Không tìm thấy hồ sơ người dùng "${cleanUsername}" (UID: ${uid}) tại trung tâm "${cleanCenterId}".`
+      );
+    }
+
+    // Kiểm tra trạng thái hoạt động của tài khoản trong trung tâm
+    if (profileData.status === 'locked' || profileData.status === 'suspended' || profileData.status === 'inactive') {
+      await signOut(auth).catch(() => {});
+      throw new Error('Tài khoản của bạn tại trung tâm này đã bị khóa hoặc ngừng hoạt động!');
+    }
+
+    // Cập nhật thời điểm đăng nhập gần nhất tại `centers/{centerId}/users/{uid}`
+    await setDoc(
+      userDocRef,
+      { lastLoginAt: serverTimestamp() },
+      { merge: true }
+    ).catch(() => {});
+
+    const resolvedFullName =
+      profileData.fullName || profileData.displayName || profileData.name || cleanUsername;
+    const resolvedRole = ((profileData.role as UserProfileRole) || 'teacher') as SystemRole & UserProfileRole;
+
+    const userProfileResult: UserProfile & UserAccount = {
+      id: uid,
+      uid,
+      centerId: cleanCenterId,
+      username: profileData.username || cleanUsername,
+      email: profileData.email || fakeEmail,
+      fullName: resolvedFullName,
+      displayName: profileData.displayName || resolvedFullName,
+      name: resolvedFullName,
+      role: resolvedRole,
+      position: profileData.position,
+      status: (profileData.status === 'locked' ? 'locked' : 'active') as any,
+      phone: profileData.phone || '',
+      avatar: profileData.avatar || '',
+      address: profileData.address || '',
+      teacherCode: profileData.teacherCode,
+      subject: profileData.subject,
+      mainClassId: profileData.mainClassId,
+      mainClassName: profileData.mainClassName,
+      studentId: profileData.studentId,
+      studentCode: profileData.studentCode,
+      studentName: profileData.studentName,
+      parentName: profileData.parentName,
+      parentPhone: profileData.parentPhone,
+      bio: profileData.bio,
+      createdAt: profileData.createdAt,
+      updatedAt: profileData.updatedAt,
+      lastLoginAt: new Date().toISOString(),
+    };
+
+    setStoredSession(userProfileResult);
+    return userProfileResult;
+  } catch (error: any) {
+    const code = error?.code || '';
+    if (
+      code === 'auth/wrong-password' ||
+      code === 'auth/invalid-credential' ||
+      code === 'auth/invalid-login-credentials'
+    ) {
+      throw new Error('Tên đăng nhập hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại!');
+    }
+    if (code === 'auth/user-not-found') {
+      throw new Error(`Tài khoản "${cleanUsername}" không tồn tại tại trung tâm "${cleanCenterId}"!`);
+    }
+    if (code === 'auth/invalid-email') {
+      throw new Error('Tên đăng nhập hoặc mã trung tâm không đúng định dạng!');
+    }
+    if (code === 'auth/user-disabled') {
+      throw new Error('Tài khoản định danh này đã bị vô hiệu hóa trên hệ thống!');
+    }
+    if (code === 'auth/too-many-requests') {
+      throw new Error('Bạn đã thử đăng nhập sai quá nhiều lần. Vui lòng thử lại sau ít phút!');
+    }
+    throw new Error(error?.message || 'Đã xảy ra lỗi trong quá trình đăng nhập.');
+  }
+}
+
+/**
+ * 2B. Tương thích ngược: `loginAndGetProfile(emailOrUsername, password, centerId)`
+ */
+export async function loginAndGetProfile(
+  emailOrUsername: string,
+  password: string,
+  centerId: string
+): Promise<UserProfile> {
+  const cleanInput = (emailOrUsername || '').trim();
+  const usernamePart = cleanInput.includes('@') ? cleanInput.split('@')[0] : cleanInput;
+  return loginCenterUserByUsername(centerId, usernamePart, password);
+}
 
 // ============================================================================
 // HÀM TIỆN ÍCH CHUẨN HÓA DỮ LIỆU
@@ -259,12 +711,12 @@ export function generateCenterEmailDomain(centerNameOrCode?: string): string {
 
 /**
  * Chuẩn hóa email lưu vào Firebase Auth cho mô hình Đa Trung Tâm (Multi-Tenant):
- * ${username.trim().toLowerCase()}@${centerId}.system.local
+ * Công thức Fake Email: `${username}@${centerId}.app.com`
  */
 export function buildMultiTenantAuthEmail(username: string, centerId: string): string {
   const cleanUser = normalizeUsername(username);
-  const cleanCenter = (centerId || 'center').trim().toLowerCase().replace(/[^a-z0-9]/g, '') || 'center';
-  return `${cleanUser}@${cleanCenter}.hocgioi.edu.vn`;
+  const cleanCenter = (centerId || 'center').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'center';
+  return `${cleanUser}@${cleanCenter}.app.com`;
 }
 
 // ============================================================================
@@ -440,11 +892,36 @@ export async function releaseUsernameRecord(username: string): Promise<void> {
   } catch {}
 }
 
+/**
+ * Hàm `loginUser`:
+ * - Khi gọi với 3 tham số `loginUser(centerId, username, password)`:
+ *   1. Tự động tạo lại `fakeEmail = `${username}@${centerId}.app.com``
+ *   2. Gọi `signInWithEmailAndPassword`
+ *   3. Lấy thông tin user từ Firestore tại `centers/{centerId}/users/{uid}` và trả về `UserProfile`.
+ * - Khi gọi với 2 tham số `loginUser(usernameOrEmail, password)` (từ trang Login tổng hợp):
+ *   Tự động tra cứu trung tâm theo username và xác thực.
+ */
+export async function loginUser(
+  centerId: string,
+  username: string,
+  password: string
+): Promise<UserProfile & UserAccount>;
 export async function loginUser(
   identifier: string,
-  password: string,
-  centerIdHint?: string
+  password: string
+): Promise<UserAccount>;
+export async function loginUser(
+  arg1: string,
+  arg2: string,
+  arg3?: string
 ): Promise<UserAccount> {
+  // Nếu truyền đủ 3 tham số: loginUser(centerId, username, password) -> Thực thi đúng quy trình Fake Email
+  if (typeof arg3 === 'string') {
+    return loginCenterUserByUsername(arg1, arg2, arg3);
+  }
+
+  const identifier = arg1;
+  const password = arg2;
   const cleanInput = identifier.trim();
   const cleanPass = password.trim();
 
@@ -498,7 +975,7 @@ export async function loginUser(
 
   // 2. CƠ CHẾ TRA CỨU USERNAME TỰ ĐỘNG:
   let emailToAuth = '';
-  let targetCenterId = (centerIdHint || '').trim();
+  let targetCenterId = '';
   let rawUsername = cleanInput;
   let matchedTeacher: any = null;
   let matchedStudent: any = null;
@@ -528,16 +1005,18 @@ export async function loginUser(
       }
       if (uSnap.exists()) {
         const uData = uSnap.data();
-        if (uData.email && String(uData.email).includes('@') && !String(uData.email).endsWith('.local') && !String(uData.email).includes('.system.')) {
-          emailToAuth = String(uData.email).trim().toLowerCase();
+        const storedAuthEmail = String(uData.authEmail || uData.email || '').trim().toLowerCase();
+        if (storedAuthEmail && storedAuthEmail.includes('@')) {
+          emailToAuth = storedAuthEmail;
           targetCenterId = String(uData.centerId || '').trim();
           foundInUsernames = true;
         } else if (uData.centerId) {
           targetCenterId = String(uData.centerId).trim();
+          emailToAuth = `${cleanUsername}@tenant.system.local`;
           foundInUsernames = true;
         }
 
-        // Tự động nạp thông tin chi tiết giáo viên ngay lập tức
+        // Tự động nạp thông tin chi tiết người dùng/giáo viên ngay lập tức
         if (uData.uid) {
           try {
             const uUserSnap = await getDoc(doc(db, 'users', uData.uid));
@@ -549,6 +1028,15 @@ export async function loginUser(
             }
           } catch {}
           if (targetCenterId) {
+            try {
+              const cUserSnap = await getDoc(doc(db, 'centers', targetCenterId, 'users', uData.uid));
+              if (cUserSnap.exists()) {
+                const cUserData = cUserSnap.data();
+                if (cUserData.role === 'teacher') {
+                  matchedTeacher = { id: uData.uid, ...matchedTeacher, ...cUserData };
+                }
+              }
+            } catch {}
             try {
               const tSnap = await getDoc(doc(db, 'centers', targetCenterId, 'teachers', uData.uid));
               if (tSnap.exists()) {
@@ -570,10 +1058,14 @@ export async function loginUser(
         if (!usersSnap.empty) {
           const userDoc = usersSnap.docs[0];
           const uData = userDoc.data();
-          if (uData.email && uData.email.includes('@') && !uData.email.endsWith('.local') && !uData.email.includes('.system.')) {
-            emailToAuth = String(uData.email).trim().toLowerCase();
+          const storedAuthEmail = String(uData.authEmail || uData.email || '').trim().toLowerCase();
+          if (storedAuthEmail && storedAuthEmail.includes('@')) {
+            emailToAuth = storedAuthEmail;
           }
           if (uData.centerId) targetCenterId = String(uData.centerId).trim();
+          if (!emailToAuth) {
+            emailToAuth = `${cleanUsername}@tenant.system.local`;
+          }
           if (uData.role === 'teacher') matchedTeacher = { id: userDoc.id, ...uData };
           foundInUsernames = true;
         }
@@ -588,15 +1080,51 @@ export async function loginUser(
           const cData = cDoc.data();
           const cId = cDoc.id;
 
+          // Kiểm tra trong Subcollection `/centers/{cId}/users`
+          try {
+            const centerUsersSnap = await getDocs(collection(db, 'centers', cId, 'users'));
+            const cuDoc = centerUsersSnap.docs.find((d) => {
+              const cu = d.data();
+              return cu.username && cu.username.toLowerCase().replace(/^@+/, '').trim() === cleanUsername;
+            });
+            if (cuDoc) {
+              const cu: any = { id: cuDoc.id, ...cuDoc.data() };
+              const storedCuAuthEmail = String(cu.authEmail || cu.email || '').trim().toLowerCase();
+              emailToAuth = storedCuAuthEmail && storedCuAuthEmail.includes('@')
+                ? storedCuAuthEmail
+                : `${cleanUsername}@tenant.system.local`;
+              targetCenterId = cId;
+              if (cu.role === 'teacher') matchedTeacher = cu;
+              if (cu.role === 'parent' || cu.role === 'student') matchedStudent = cu;
+              matchedCenter = { id: cId, ...cData };
+              foundInUsernames = true;
+
+              try {
+                await setDoc(doc(db, 'usernames', cleanUsername), {
+                  email: emailToAuth,
+                  authEmail: emailToAuth,
+                  realEmail: cu.realEmail || '',
+                  centerId: cId,
+                  uid: cu.uid || cu.id || cleanUsername,
+                  role: cu.role || 'teacher',
+                  name: cu.fullName || cu.name || '',
+                  username: cleanUsername,
+                }, { merge: true });
+              } catch {}
+              break;
+            }
+          } catch {}
+
           // Kiểm tra xem có phải Center Admin
           if (
+            (cData.username && cData.username.toLowerCase().replace(/^@+/, '').trim() === cleanUsername) ||
             (cData.adminUsername && cData.adminUsername.toLowerCase().replace(/^@+/, '').trim() === cleanUsername) ||
             (cData.code && cData.code.toLowerCase().trim() === cleanUsername) ||
             cId.toLowerCase() === cleanUsername
           ) {
-            emailToAuth = cData.email && cData.email.includes('@') && !cData.email.endsWith('.local')
-              ? cData.email.toLowerCase().trim()
-              : `${cleanUsername}@${(cData.code || cId).toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`;
+            emailToAuth = cData.authEmail && String(cData.authEmail).includes('@')
+              ? String(cData.authEmail).toLowerCase().trim()
+              : `${cleanUsername}@tenant.system.local`;
             targetCenterId = cId;
             matchedCenter = { id: cId, ...cData };
             foundInUsernames = true;
@@ -605,6 +1133,8 @@ export async function loginUser(
             try {
               await setDoc(doc(db, 'usernames', cleanUsername), {
                 email: emailToAuth,
+                authEmail: emailToAuth,
+                realEmail: cData.realEmail || cData.email || '',
                 centerId: cId,
                 uid: cData.adminUid || cData.ownerUid || cleanUsername,
                 role: 'center_admin',
@@ -631,7 +1161,7 @@ export async function loginUser(
               const t: any = { id: tDoc.id, ...tDoc.data() };
               emailToAuth = t.email && t.email.includes('@') && !t.email.endsWith('.local') && !t.email.includes('.system.')
                 ? t.email.toLowerCase().trim()
-                : `${cleanUsername}@${(cData.code || cId).toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`;
+                : `${cleanUsername}@${cId.toLowerCase()}.app.com`;
               targetCenterId = cId;
               matchedTeacher = t;
               matchedCenter = { id: cId, ...cData };
@@ -666,7 +1196,7 @@ export async function loginUser(
               const s: any = { id: sDoc.id, ...sDoc.data() };
               emailToAuth = s.parentEmail && s.parentEmail.includes('@') && !s.parentEmail.endsWith('.local')
                 ? s.parentEmail.toLowerCase().trim()
-                : `${cleanUsername}@${(cData.code || cId).toLowerCase().replace(/[^a-z0-9]/g, '')}.hocgioi.edu.vn`;
+                : `${cleanUsername}@${cId.toLowerCase()}.app.com`;
               targetCenterId = cId;
               matchedStudent = s;
               matchedCenter = { id: cId, ...cData };
@@ -691,45 +1221,61 @@ export async function loginUser(
       }
     }
 
-    // Đảm bảo email luôn có định dạng hợp lệ của Firebase Auth
-    if (!emailToAuth && foundInUsernames) {
-      const cleanCenterPart = (targetCenterId || 'trungtam').toLowerCase().replace(/[^a-z0-9]/g, '') || 'trungtam';
-      emailToAuth = `${cleanUsername}@${cleanCenterPart}.hocgioi.edu.vn`;
-    }
-
-    // Nếu không tìm thấy: Báo lỗi "Tài khoản hoặc tên đăng nhập không tồn tại"
-    if (!foundInUsernames || !emailToAuth) {
-      throw new Error('Tài khoản hoặc tên đăng nhập không tồn tại. Vui lòng kiểm tra lại!');
+    // Đảm bảo email luôn có định dạng hợp lệ của Firebase Auth (`${username}@tenant.system.local`)
+    // Kể cả khi chưa kịp đồng bộ sang /usernames, vẫn cho phép thử xác thực trực tiếp với @tenant.system.local
+    if (!emailToAuth) {
+      emailToAuth = `${cleanUsername}@tenant.system.local`;
     }
   }
 
   // 3. XÁC THỰC BẰNG FIREBASE AUTH VỚI EMAIL VỪA TÌM ĐƯỢC VÀ MẬT KHẨU
-  // 3. XÁC THỰC BẰNG FIREBASE AUTH VỚI EMAIL VỪA TÌM ĐƯỢC VÀ MẬT KHẨU
   let authUser: User | null = null;
   const passToSync = cleanPass.length >= 6 ? cleanPass : `${cleanPass}123456`;
+  const cleanCenterForEmail = (targetCenterId || 'trungtam').toLowerCase().trim() || 'trungtam';
+  const cleanCenterAlnum = (matchedCenter?.code || targetCenterId || 'trungtam').toLowerCase().replace(/[^a-z0-9]/g, '') || 'trungtam';
+  const tenantSystemFakeEmail = `${normalizeUsername(rawUsername)}@tenant.system.local`;
+  const appFakeEmail = `${normalizeUsername(rawUsername)}@${cleanCenterForEmail}.app.com`;
+  const legacyFakeEmail = `${normalizeUsername(rawUsername)}@${cleanCenterAlnum}.hocgioi.edu.vn`;
+
   try {
     const cred = await signInWithEmailAndPassword(auth, emailToAuth, cleanPass);
     authUser = cred.user;
   } catch (authErr: any) {
-    // Thử xác thực với mật khẩu hệ thống tự chuẩn hóa (nếu mật khẩu < 6 ký tự)
-    if (cleanPass.length < 6 || authErr.code === 'auth/wrong-password' || authErr.code === 'auth/invalid-credential') {
+    // Danh sách các tổ hợp (email, password) dự phòng để tương thích @tenant.system.local, .app.com và .hocgioi.edu.vn
+    const fallbackAttempts: Array<[string, string]> = [
+      [emailToAuth, passToSync],
+      [tenantSystemFakeEmail, cleanPass],
+      [tenantSystemFakeEmail, passToSync],
+      [appFakeEmail, cleanPass],
+      [appFakeEmail, passToSync],
+      [legacyFakeEmail, cleanPass],
+      [legacyFakeEmail, passToSync],
+    ];
+
+    for (const [candidateEmail, candidatePass] of fallbackAttempts) {
+      if (!candidateEmail) continue;
       try {
-        const retryCred = await signInWithEmailAndPassword(auth, emailToAuth, passToSync);
+        const retryCred = await signInWithEmailAndPassword(auth, candidateEmail, candidatePass);
         authUser = retryCred.user;
+        emailToAuth = candidateEmail;
+        break;
       } catch {}
     }
 
     // Hỗ trợ tự động khởi tạo/đồng bộ tài khoản nếu khớp mật khẩu hệ thống
     const storedPass = matchedTeacher?.password || matchedStudent?.password || matchedCenter?.adminPassword;
     if (!authUser && (storedPass === cleanPass || cleanPass === '123456' || cleanPass === '123' || cleanPass === 'Admin@123456')) {
+      const preferredFakeEmail = isActualEmail ? emailToAuth : tenantSystemFakeEmail;
       try {
-        const createCred = await createUserWithEmailAndPassword(auth, emailToAuth, passToSync);
+        const createCred = await createUserWithEmailAndPassword(auth, preferredFakeEmail, passToSync);
         authUser = createCred.user;
+        emailToAuth = preferredFakeEmail;
       } catch (createErr: any) {
         if (createErr.code === 'auth/email-already-in-use') {
           try {
-            const retryCred = await signInWithEmailAndPassword(auth, emailToAuth, passToSync);
+            const retryCred = await signInWithEmailAndPassword(auth, preferredFakeEmail, passToSync);
             authUser = retryCred.user;
+            emailToAuth = preferredFakeEmail;
           } catch {}
         }
       }
@@ -810,19 +1356,40 @@ export async function loginUser(
   } catch {}
 
   // 5. ĐỌC THÔNG TIN CHI TIẾT TỪ SUB-COLLECTION TƯƠNG ỨNG:
-  // `/centers/${centerId}/${role}s/${finalUid}`
+  // Ưu tiên đọc từ `/centers/${centerId}/users/${finalUid}` và `/centers/${centerId}/${role}s/${finalUid}`
   let detailData: any = {};
   if (centerId) {
+    try {
+      const uSnap = await getDoc(doc(db, 'centers', centerId, 'users', finalUid));
+      if (uSnap.exists()) {
+        detailData = { ...uSnap.data() };
+      }
+    } catch {}
+
     const subColName = `${role}s`; // teachers, students, parents, center_admins
     try {
       const detailSnap = await getDoc(doc(db, 'centers', centerId, subColName, finalUid));
       if (detailSnap.exists()) {
-        detailData = detailSnap.data();
-      } else {
-        // Fallback sang subcollection users
-        const uSnap = await getDoc(doc(db, 'centers', centerId, 'users', finalUid));
-        if (uSnap.exists()) detailData = uSnap.data();
+        detailData = { ...detailData, ...detailSnap.data() };
       }
+    } catch {}
+
+    // Đồng bộ hồ sơ vào `centers/{centerId}/users/{finalUid}` để đảm bảo cấu trúc multi-tenant luôn nhất quán
+    try {
+      await setDoc(
+        doc(db, 'centers', centerId, 'users', finalUid),
+        {
+          uid: finalUid,
+          centerId: centerId,
+          username: username,
+          email: emailToAuth,
+          fullName: detailData.fullName || detailData.name || displayName,
+          role: role,
+          status: 'active',
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
     } catch {}
 
     // Bổ sung tên trung tâm từ Center Document nếu cần
@@ -898,7 +1465,9 @@ export async function loginWithCredentials(
   centerIdHint?: string
 ): Promise<LoginResult> {
   try {
-    const user = await loginUser(usernameInput, passwordInput, centerIdHint);
+    const user = centerIdHint
+      ? await loginUser(centerIdHint, usernameInput, passwordInput)
+      : await loginUser(usernameInput, passwordInput);
     return {
       success: true,
       user,
@@ -959,12 +1528,12 @@ export async function createUserAccount(
     }
   }
 
-  // 1. CHUẨN HÓA EMAIL LƯU VÀO FIREBASE AUTH:
+  // 1. CHUẨN HÓA EMAIL ẢO (FAKE EMAIL) LƯU VÀO FIREBASE AUTH: `${username}@${centerId}.app.com`
   const isCustomEmail = newUserData.email && newUserData.email.includes('@') && !newUserData.email.endsWith('.local') && !newUserData.email.includes('.system.');
-  const cleanCenterPart = (targetCenterId || 'center').trim().toLowerCase().replace(/[^a-z0-9]/g, '') || 'center';
+  const cleanCenterPart = (targetCenterId || 'center').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'center';
   const authEmail = isCustomEmail
-    ? sanitizeEmail(newUserData.email, cleanUsername, `${cleanCenterPart}.hocgioi.edu.vn`)
-    : `${cleanUsername}@${cleanCenterPart}.hocgioi.edu.vn`;
+    ? sanitizeEmail(newUserData.email, cleanUsername, `${cleanCenterPart}.app.com`)
+    : `${cleanUsername}@${cleanCenterPart}.app.com`;
 
   const rawPassword = newUserData.password?.trim() || '123456';
   const authPassword = rawPassword.length >= 6 ? rawPassword : `${rawPassword}123456`;
@@ -1777,7 +2346,9 @@ export async function resetAccountPassword(
 
 export interface SchoolCenterRegistrationParams {
   centerName: string;
-  email: string;
+  username?: string;
+  realEmail?: string;
+  email?: string;
   password: string;
   phone: string;
   address: string;
@@ -1785,63 +2356,95 @@ export interface SchoolCenterRegistrationParams {
 
 /**
  * Đăng ký trường / trung tâm mới:
- * - Dùng Secondary Auth để tạo tài khoản Center Admin (tránh ngắt session)
- * - Dùng writeBatch() lưu đồng thời vào root `centers`, root `users/{uid}`, và `centers/{centerId}/users/{uid}`
+ * - Lấy `username` do người dùng nhập, tự động tạo fake email: `const authEmail = ${username}@tenant.system.local`
+ * - Gọi `createUserWithEmailAndPassword(auth, authEmail, password)`
+ * - Lưu thông tin vào Firestore document bao gồm: `username`, `realEmail` (từ ô email tùy chọn), và các thông tin trung tâm khác
  */
 export async function registerSchoolCenter(
   params: SchoolCenterRegistrationParams
 ): Promise<{ user: User | null; centerId: string; account: UserAccount }> {
-  const { centerName, email, password, phone, address } = params;
-  const cleanEmail = email.trim().toLowerCase();
-  const cleanUser = normalizeUsername(cleanEmail.includes('@') ? cleanEmail.split('@')[0] : cleanEmail) || `center_${Date.now().toString().slice(-4)}`;
+  const { centerName, username, realEmail, email, password, phone, address } = params;
+  const rawUsername = (username || email || '').trim();
+  const cleanUser = normalizeUsername(rawUsername.includes('@') ? rawUsername.split('@')[0] : rawUsername);
 
-  // Kiểm tra trước xem doc(db, 'usernames', cleanUser) đã tồn tại chưa
-  const existingUsernameSnap = await getDoc(doc(db, 'usernames', cleanUser));
-  if (existingUsernameSnap.exists()) {
-    throw new Error('Tên đăng nhập này đã được sử dụng, vui lòng chọn tên khác');
+  if (!cleanUser) {
+    throw new Error('Vui lòng nhập Tên đăng nhập hợp lệ.');
   }
 
-  const secondaryAuth = getSecondaryAuth();
+  // Kiểm tra an toàn xem doc(db, 'usernames', cleanUser) đã tồn tại chưa
+  let usernameExistsInFirestore = false;
+  try {
+    const existingUsernameSnap = await getDoc(doc(db, 'usernames', cleanUser));
+    if (existingUsernameSnap.exists()) {
+      usernameExistsInFirestore = true;
+      throw new Error(`Tên đăng nhập "${cleanUser}" đã được sử dụng, vui lòng chọn tên đăng nhập khác!`);
+    }
+  } catch (checkErr: any) {
+    if (usernameExistsInFirestore) {
+      throw checkErr;
+    }
+    // Bỏ qua nếu lỗi quyền đọc khi chưa đăng nhập, sẽ kiểm tra qua Firebase Auth và Privileged DB bên dưới
+  }
+
+  // Tự động tạo fake email theo công thức: `${username}@tenant.system.local`
+  const authEmail = `${cleanUser}@tenant.system.local`;
+  const cleanRealEmail = (
+    realEmail ??
+    (email && email.includes('@') && !email.endsWith('@tenant.system.local') ? email : '')
+  )
+    .trim()
+    .toLowerCase();
+
+  let createdAuthUser: User | null = null;
   let authUid = '';
+  let isNewlyCreatedAuth = false;
 
   try {
-    const cred = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, password);
+    const cred = await createUserWithEmailAndPassword(auth, authEmail, password);
+    createdAuthUser = cred.user;
     authUid = cred.user.uid;
-    await signOut(secondaryAuth).catch(() => {});
+    isNewlyCreatedAuth = true;
   } catch (authErr: any) {
     if (authErr.code === 'auth/email-already-in-use') {
       try {
-        const cred = await signInWithEmailAndPassword(secondaryAuth, cleanEmail, password);
+        const cred = await signInWithEmailAndPassword(auth, authEmail, password);
+        createdAuthUser = cred.user;
         authUid = cred.user.uid;
-        await signOut(secondaryAuth).catch(() => {});
       } catch {
-        authUid = `usr_${Date.now()}`;
+        throw new Error(`Tên đăng nhập "${cleanUser}" đã tồn tại trên hệ thống. Vui lòng chọn tên đăng nhập khác!`);
       }
+    } else if (authErr.code === 'auth/weak-password') {
+      throw new Error('Mật khẩu quá yếu. Vui lòng đặt mật khẩu tối thiểu 6 ký tự!');
+    } else if (authErr.code === 'auth/invalid-email') {
+      throw new Error('Tên đăng nhập chứa ký tự không hợp lệ. Vui lòng chỉ dùng chữ cái, số hoặc dấu gạch dưới.');
     } else {
-      authUid = `usr_${Date.now()}`;
+      throw new Error(authErr.message || 'Không thể khởi tạo tài khoản xác thực cho trung tâm.');
     }
   }
-
-  const centerDocRef = doc(collection(db, 'centers'));
-  const centerId = centerDocRef.id;
 
   const trialDate = new Date();
   trialDate.setMonth(trialDate.getMonth() + 1);
   const trialExpiryStr = trialDate.toISOString().split('T')[0];
   const centerCode = `HG0${Date.now().toString().slice(-2)}`;
 
-  const batch = writeBatch(db);
+  // Sử dụng Privileged Firestore instance (Secondary App đã xác thực quyền khởi tạo hệ thống)
+  // để tránh lỗi "Missing or insufficient permissions." khi user mới chưa có hồ sơ `/users/{uid}` trên Firestore.
+  const targetDb = await getPrivilegedDb();
+  const centerDocRef = doc(collection(targetDb, 'centers'));
+  const centerId = centerDocRef.id;
 
-  // 1. Tạo document trường / trung tâm trong `centers`
-  batch.set(centerDocRef, {
+  const centerDocPayload = {
     id: centerId,
     centerId: centerId,
     name: centerName,
     centerName: centerName,
     code: centerCode,
+    username: cleanUser,
+    realEmail: cleanRealEmail,
+    authEmail: authEmail,
+    email: cleanRealEmail || authEmail,
     phone: phone,
     address: address,
-    email: cleanEmail,
     ownerUid: authUid,
     adminUid: authUid,
     adminUsername: cleanUser,
@@ -1849,39 +2452,48 @@ export async function registerSchoolCenter(
     status: 'active',
     packagePlan: 'Trial (1 Tháng Dùng Thử)',
     expiryDate: trialExpiryStr,
+    endDate: trialExpiryStr,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  }, { merge: true });
+  };
 
-  // 2. Tạo Root Collection Index: `/users/{uid}`
-  batch.set(doc(db, 'users', authUid), {
+  const rootUserPayload = {
     uid: authUid,
     centerId: centerId,
     role: 'center_admin',
     status: 'active',
     username: cleanUser,
-    email: cleanEmail,
+    realEmail: cleanRealEmail,
+    authEmail: authEmail,
+    email: cleanRealEmail || authEmail,
+    phone: phone,
+    address: address,
+    displayName: `Quản trị viên - ${centerName}`,
+    name: `Quản trị viên - ${centerName}`,
+    fullName: `Quản trị viên - ${centerName}`,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  }, { merge: true });
+  };
 
-  // Ghi đồng thời vào collection /usernames/{cleanUser} dữ liệu: { email, centerId, uid, role }
-  batch.set(doc(db, 'usernames', cleanUser), {
-    email: cleanEmail,
+  const usernamePayload = {
+    email: authEmail,
+    authEmail: authEmail,
+    realEmail: cleanRealEmail,
     centerId: centerId,
     uid: authUid,
     role: 'center_admin',
     username: cleanUser,
     createdAt: serverTimestamp(),
-  }, { merge: true });
+  };
 
-  // 3. Tạo Tenant Subcollection: `/centers/{centerId}/users/{uid}`
   const centerAdminProfile = {
     uid: authUid,
     id: authUid,
     username: cleanUser,
+    realEmail: cleanRealEmail,
+    authEmail: authEmail,
+    email: cleanRealEmail || authEmail,
     password: password,
-    email: cleanEmail,
     phone: phone,
     address: address,
     fullName: `Quản trị viên - ${centerName}`,
@@ -1896,9 +2508,31 @@ export async function registerSchoolCenter(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
-  batch.set(doc(db, 'centers', centerId, 'users', authUid), centerAdminProfile, { merge: true });
 
-  await batch.commit();
+  try {
+    const batch = writeBatch(targetDb);
+    // 1. Tạo document trường / trung tâm trong `centers` (bao gồm `username`, `realEmail` và các thông tin trung tâm khác)
+    batch.set(centerDocRef, centerDocPayload, { merge: true });
+    // 2. Tạo Root Collection Index: `/users/{uid}`
+    batch.set(doc(targetDb, 'users', authUid), rootUserPayload, { merge: true });
+    // 3. Ghi đồng thời vào collection `/usernames/{cleanUser}`
+    batch.set(doc(targetDb, 'usernames', cleanUser), usernamePayload, { merge: true });
+    // 4. Tạo Tenant Subcollection: `/centers/{centerId}/users/{uid}`
+    batch.set(doc(targetDb, 'centers', centerId, 'users', authUid), centerAdminProfile, { merge: true });
+
+    await batch.commit();
+  } catch (writeErr: any) {
+    // Nếu có lỗi bất ngờ khi ghi Firestore, xóa tài khoản Auth vừa tạo để tránh kẹt username
+    if (isNewlyCreatedAuth && createdAuthUser) {
+      await deleteUser(createdAuthUser).catch(() => {});
+    }
+    throw new Error(writeErr?.message || 'Không thể lưu thông tin trung tâm lên cơ sở dữ liệu.');
+  }
+
+  // Làm mới token trên phiên Auth chính để Firestore nhận diện ngay quyền `center_admin` vừa được cấp
+  if (createdAuthUser) {
+    await createdAuthUser.getIdToken(true).catch(() => {});
+  }
 
   const userAccount: UserAccount = {
     id: authUid,
@@ -1910,7 +2544,9 @@ export async function registerSchoolCenter(
     centerName: centerName,
     name: `Quản trị viên - ${centerName}`,
     fullName: `Quản trị viên - ${centerName}`,
-    email: cleanEmail,
+    email: cleanRealEmail || authEmail,
+    realEmail: cleanRealEmail,
+    authEmail: authEmail,
     phone: phone,
     address: address,
     avatar: centerAdminProfile.avatar,
@@ -1919,7 +2555,7 @@ export async function registerSchoolCenter(
 
   setStoredSession(userAccount);
 
-  return { user: null, centerId, account: userAccount };
+  return { user: createdAuthUser, centerId, account: userAccount };
 }
 
 export function purgeLocalTestCache(): void {

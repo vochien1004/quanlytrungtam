@@ -125,21 +125,22 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
 
   // 2. Strict Class Assignment Filtering (Lọc danh sách Lớp học theo phân công thực tế từ Firebase)
   // Hỗ trợ 1 giáo viên đảm nhận nhiều lớp cùng lúc (assignedClassIds)
-  const strictlyAssignedClasses = (classes || []).filter((c) => {
-    if (!c) return false;
-    const matchUid = currentTeacherUid && c.teacherId === currentTeacherUid;
-    const matchTeacherId = teacher?.id && c.teacherId === teacher.id;
-    const matchMainClass = teacher?.mainClassId && c.id === teacher.mainClassId;
-    const matchAssignedArray = Array.isArray(teacher?.assignedClassIds) && teacher.assignedClassIds.includes(c.id);
-    const matchCurrentUserAssigned = Array.isArray((currentUser as any)?.assignedClassIds) && (currentUser as any).assignedClassIds.includes(c.id);
-    const matchTeacherName = teacher?.name && c.teacherName && c.teacherName.toLowerCase().includes(teacher.name.toLowerCase());
-    const matchCurrentUserName = currentUser?.name && c.teacherName && c.teacherName.toLowerCase().includes(currentUser.name.toLowerCase());
-    const matchCurrentUserFullName = currentUser?.fullName && c.teacherName && c.teacherName.toLowerCase().includes(currentUser.fullName.toLowerCase());
-    const matchCurrentUserDisplayName = currentUser?.displayName && c.teacherName && c.teacherName.toLowerCase().includes(currentUser.displayName.toLowerCase());
-    return matchUid || matchTeacherId || matchMainClass || matchAssignedArray || matchCurrentUserAssigned || matchTeacherName || matchCurrentUserName || matchCurrentUserFullName || matchCurrentUserDisplayName;
-  });
-
-  const assignedClasses = strictlyAssignedClasses.length > 0 ? strictlyAssignedClasses : classes;
+  const assignedClasses = useMemo(() => {
+    const strictlyAssigned = (classes || []).filter((c) => {
+      if (!c) return false;
+      const matchUid = currentTeacherUid && c.teacherId === currentTeacherUid;
+      const matchTeacherId = teacher?.id && c.teacherId === teacher.id;
+      const matchMainClass = teacher?.mainClassId && c.id === teacher.mainClassId;
+      const matchAssignedArray = Array.isArray(teacher?.assignedClassIds) && teacher.assignedClassIds.includes(c.id);
+      const matchCurrentUserAssigned = Array.isArray((currentUser as any)?.assignedClassIds) && (currentUser as any).assignedClassIds.includes(c.id);
+      const matchTeacherName = teacher?.name && c.teacherName && c.teacherName.toLowerCase().includes(teacher.name.toLowerCase());
+      const matchCurrentUserName = currentUser?.name && c.teacherName && c.teacherName.toLowerCase().includes(currentUser.name.toLowerCase());
+      const matchCurrentUserFullName = currentUser?.fullName && c.teacherName && c.teacherName.toLowerCase().includes(currentUser.fullName.toLowerCase());
+      const matchCurrentUserDisplayName = currentUser?.displayName && c.teacherName && c.teacherName.toLowerCase().includes(currentUser.displayName.toLowerCase());
+      return matchUid || matchTeacherId || matchMainClass || matchAssignedArray || matchCurrentUserAssigned || matchTeacherName || matchCurrentUserName || matchCurrentUserFullName || matchCurrentUserDisplayName;
+    });
+    return strictlyAssigned.length > 0 ? strictlyAssigned : classes;
+  }, [classes, currentTeacherUid, teacher, currentUser]);
 
   // Selected Class ID State (Defaults to first assigned class)
   const [selectedClassId, setSelectedClassId] = useState<string>('');
@@ -150,10 +151,10 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
       if (!selectedClassId || !assignedClasses.some((c) => c.id === selectedClassId)) {
         setSelectedClassId(assignedClasses[0].id);
       }
-    } else {
+    } else if (selectedClassId !== '') {
       setSelectedClassId('');
     }
-  }, [assignedClasses]);
+  }, [assignedClasses, selectedClassId]);
 
   // Class switch handler with smooth loading spinner feedback
   const handleClassChange = (newClassId: string) => {

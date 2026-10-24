@@ -59,12 +59,22 @@ export type {
   StudentDocument,
   Teacher,
   TeacherDocument,
+  UserProfile,
+  UserProfileRole,
+  UserProfileStatus,
   ClassDocument,
   AttendanceDocument,
   StudentAttendanceEntry,
   AssignmentDocument,
   AssignmentSubmissionDocument,
 } from '../types/firestoreSchema';
+export {
+  buildFakeEmail,
+  registerUser,
+  loginUser,
+  registerUserForCenter,
+  loginAndGetProfile,
+} from './authService';
 
 export type SystemRole = 'super_admin' | 'center_admin' | 'admin' | 'teacher' | 'teachers' | 'parent' | 'parents' | string;
 
@@ -474,13 +484,14 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
         throw new Error('Tên đăng nhập này đã được sử dụng, vui lòng chọn tên khác');
       }
 
-      const email = cleanUser.includes('@') ? cleanUser : `${cleanUser}@${(cleanCenterData.code || centerId).toLowerCase()}.system.local`;
+      const authEmail = `${cleanUser}@tenant.system.local`;
+      const realEmail = (cleanCenterData.realEmail || cleanCenterData.email || '').trim().toLowerCase();
       const password = cleanCenterData.adminPassword.trim() || '123456';
       let uid = cleanUser;
 
       try {
         const secondaryAuth = getSecondaryAuth();
-        const userCred = await createUserWithEmailAndPassword(secondaryAuth, email, password.length >= 6 ? password : `${password}123456`);
+        const userCred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, password.length >= 6 ? password : `${password}123456`);
         uid = userCred.user.uid;
         await signOut(secondaryAuth).catch(() => {});
       } catch (authErr: any) {
@@ -491,8 +502,10 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
         uid: uid,
         id: uid,
         username: cleanUser,
+        realEmail: realEmail,
+        authEmail: authEmail,
         password: password,
-        email: email,
+        email: realEmail || authEmail,
         phone: cleanCenterData.phone || '',
         address: cleanCenterData.address || '',
         fullName: `Quản trị viên - ${cleanCenterData.name}`,
@@ -513,8 +526,12 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
       adminBatch.set(doc(db, 'centers', centerId), {
         adminUid: uid,
         ownerUid: uid,
+        username: cleanUser,
         adminUsername: cleanUser,
         adminPassword: password,
+        realEmail: realEmail,
+        authEmail: authEmail,
+        email: realEmail || authEmail,
       }, { merge: true });
 
       // 1. Root Collection Index: /users/{uid}
@@ -524,7 +541,9 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
         role: 'center_admin',
         status: cleanCenterData.status || 'active',
         username: cleanUser,
-        email: email,
+        realEmail: realEmail,
+        authEmail: authEmail,
+        email: realEmail || authEmail,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -532,7 +551,9 @@ export async function createCenter(centerData: Partial<CenterItem>): Promise<str
 
       // 2. Collection /usernames/{cleanUser}
       adminBatch.set(doc(db, 'usernames', cleanUser), {
-        email: email,
+        email: authEmail,
+        authEmail: authEmail,
+        realEmail: realEmail,
         centerId: centerId,
         uid: uid,
         role: 'center_admin',
@@ -606,7 +627,7 @@ export async function updateCenter(centerId: string, data: Partial<CenterItem>):
 export async function renewCenterSubscription(
   centerId: string,
   additionalMonths: number = 12,
-  newPackagePlan?: 'Basic' | 'Standard' | 'Premium' | 'Enterprise'
+  newPackagePlan?: string
 ): Promise<string> {
   try {
     await ensureAuthSession('super_admin');
@@ -632,19 +653,33 @@ export async function renewCenterSubscription(
     currentExpiry.setMonth(currentExpiry.getMonth() + additionalMonths);
     const newExpiryStr = currentExpiry.toISOString().split('T')[0];
 
+    const resolvedPackagePlan = newPackagePlan || `${additionalMonths} Tháng`;
+
     const updatePayload: any = {
       endDate: newExpiryStr,
       expiryDate: newExpiryStr,
+      packagePlan: resolvedPackagePlan,
       status: 'active',
       updatedAt: serverTimestamp(),
     };
 
-    if (newPackagePlan) {
-      updatePayload.packagePlan = newPackagePlan;
-    }
-
     await updateDoc(centerRef, updatePayload);
-    console.log(`✓ SuperAdmin đã gia hạn trung tâm [${centerId}] thêm ${additionalMonths} tháng -> Hạn mới: ${newExpiryStr}`);
+
+    // Đồng bộ gói cước và hạn mới sang các tài khoản liên quan của trung tâm
+    try {
+      const usersQ = query(collection(db, 'users'), where('centerId', '==', centerId));
+      const usersSnap = await getDocs(usersQ);
+      usersSnap.docs.forEach((uDoc) => {
+        updateDoc(uDoc.ref, {
+          packagePlan: resolvedPackagePlan,
+          expiryDate: newExpiryStr,
+          endDate: newExpiryStr,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      });
+    } catch {}
+
+    console.log(`✓ SuperAdmin đã gia hạn trung tâm [${centerId}] thêm ${additionalMonths} tháng (${resolvedPackagePlan}) -> Hạn mới: ${newExpiryStr}`);
     return newExpiryStr;
   } catch (error: any) {
     console.error('Lỗi gia hạn trung tâm:', error);
@@ -1232,39 +1267,6 @@ export async function requestCenterRenewal(centerId: string, renewalData: any): 
   } catch (error: any) {
     console.error('Lỗi gửi yêu cầu gia hạn:', error);
     throw new Error(`Không thể gửi yêu cầu gia hạn: ${error.message}`);
-  }
-}
-
-export function getRealtimeRenewalRequests(
-  onUpdate: (requests: any[]) => void,
-  onError?: (err: any) => void
-): Unsubscribe {
-  const reqRef = collection(db, 'renewal_requests');
-  return onSnapshot(
-    reqRef,
-    (snap) => {
-      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      onUpdate(items);
-    },
-    (err) => {
-      console.warn('Lỗi lắng nghe renewal_requests:', err.message);
-      if (onError) onError(err);
-    }
-  );
-}
-
-export async function approveRenewalRequest(requestId: string, centerId: string, months: number): Promise<void> {
-  try {
-    await renewCenterSubscription(centerId, months);
-    await updateDoc(doc(db, 'renewal_requests', requestId), {
-      status: 'approved',
-      approvedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    console.log(`✓ Đã duyệt yêu cầu gia hạn [${requestId}] cho trung tâm [${centerId}]`);
-  } catch (error: any) {
-    console.error('Lỗi duyệt gia hạn:', error);
-    throw new Error(`Không thể duyệt yêu cầu gia hạn: ${error.message}`);
   }
 }
 
@@ -3862,4 +3864,469 @@ export async function submitStudentHomework(
   triggerAssignmentListeners(validCenterId);
   return newSubmission;
 }
+
+// ============================================================================
+// 8. QUẢN LÝ YÊU CẦU GIA HẠN BẢN QUYỀN (CENTER ADMIN -> SUPER ADMIN)
+// ============================================================================
+
+export interface RenewalRequestItem {
+  id: string;
+  centerId: string;
+  centerName: string;
+  centerCode: string;
+  currentExpiryDate?: string;
+  months: 3 | 6 | 12 | number;
+  amount: number;
+  price: number;
+  memo: string;
+  bankId?: string;
+  accountNo?: string;
+  accountName?: string;
+  packageLabel: string;
+  contactPhone: string;
+  message: string;
+  requesterName?: string;
+  requesterUsername?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  adminFeedback?: string;
+  respondedAt?: any;
+  respondedAtStr?: string;
+  createdAt?: any;
+  createdAtStr?: string;
+  updatedAt?: any;
+  approvedAt?: any;
+  newExpiryDate?: string;
+}
+
+const LOCAL_RENEWAL_REQUESTS_KEY = 'tt_hocgioi_renewal_requests_v1';
+const LOCAL_DELETED_RENEWAL_IDS_KEY = 'tt_hocgioi_deleted_renewal_ids_v1';
+
+function getDeletedRenewalIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LOCAL_DELETED_RENEWAL_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function addDeletedRenewalId(id: string): void {
+  try {
+    const set = getDeletedRenewalIds();
+    set.add(id);
+    localStorage.setItem(LOCAL_DELETED_RENEWAL_IDS_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
+function getLocalRenewalRequests(): RenewalRequestItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_RENEWAL_REQUESTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const deleted = getDeletedRenewalIds();
+    return Array.isArray(parsed) ? parsed.filter((r) => r && r.id && !deleted.has(r.id)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalRenewalRequests(list: RenewalRequestItem[]): void {
+  try {
+    localStorage.setItem(LOCAL_RENEWAL_REQUESTS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('tt_hocgioi_renewal_requests_updated'));
+  } catch {}
+}
+
+/**
+ * Center Admin gửi yêu cầu gia hạn bản quyền trực tiếp tới Super Admin
+ */
+export async function submitRenewalRequest(payload: {
+  centerId: string;
+  centerName: string;
+  centerCode?: string;
+  currentExpiryDate?: string;
+  months: 3 | 6 | 12 | number;
+  amount?: number;
+  price: number;
+  memo: string;
+  bankId?: string;
+  accountNo?: string;
+  accountName?: string;
+  packageLabel?: string;
+  contactPhone: string;
+  message: string;
+  requesterName?: string;
+  requesterUsername?: string;
+}): Promise<RenewalRequestItem> {
+  try {
+    await ensureAuthSession('center_admin');
+  } catch {}
+
+  const requestId = `renew_${payload.centerId || 'center'}_${Date.now()}`;
+  const nowStr = new Date().toLocaleString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+
+  const finalPrice = Number(payload.price ?? payload.amount ?? 0);
+  const finalMemo = String(payload.memo || '').trim();
+
+  const packageLabel =
+    payload.packageLabel ||
+    `Gói ${payload.months} tháng - ${finalPrice.toLocaleString('vi-VN')} đ`;
+
+  const newRequest: RenewalRequestItem = {
+    id: requestId,
+    centerId: payload.centerId,
+    centerName: payload.centerName || 'Trung tâm đào tạo',
+    centerCode: payload.centerCode || payload.centerId || 'HG',
+    currentExpiryDate: payload.currentExpiryDate || '',
+    months: payload.months,
+    amount: finalPrice,
+    price: finalPrice,
+    memo: finalMemo,
+    bankId: payload.bankId || 'VBA',
+    accountNo: payload.accountNo || '5105205024485',
+    accountName: payload.accountName || 'VO CHIEN',
+    packageLabel,
+    contactPhone: payload.contactPhone.trim(),
+    message: payload.message.trim(),
+    requesterName: payload.requesterName || 'Quản trị trung tâm',
+    requesterUsername: payload.requesterUsername || '',
+    status: 'pending',
+    createdAtStr: nowStr,
+  };
+
+  // 1. Lưu ngay vào bộ nhớ đồng bộ cục bộ
+  const currentLocal = getLocalRenewalRequests();
+  saveLocalRenewalRequests([newRequest, ...currentLocal.filter((r) => r.id !== requestId)]);
+
+  // 2. Ghi trực tiếp lên Cloud Firestore tại `/renewal_requests/{requestId}` và đính kèm thông báo trên `/centers/{centerId}`
+  const writeToFirestore = async (targetDb: typeof db) => {
+    const reqRef = doc(targetDb, 'renewal_requests', requestId);
+    await setDoc(
+      reqRef,
+      {
+        ...newRequest,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (payload.centerId) {
+      const centerRef = doc(targetDb, 'centers', payload.centerId);
+      await updateDoc(centerRef, {
+        latestRenewalRequest: {
+          ...newRequest,
+          updatedAt: Date.now(),
+        },
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+  };
+
+  try {
+    await writeToFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(payload.centerId);
+      await writeToFirestore(privDb);
+    } catch (err) {
+      console.warn('Lưu ý ghi renewal_requests Firestore:', err);
+    }
+  }
+
+  return newRequest;
+}
+
+/**
+ * Lắng nghe danh sách yêu cầu gia hạn theo thời gian thực (Realtime)
+ */
+export function getRealtimeRenewalRequests(
+  onUpdate: (requests: RenewalRequestItem[]) => void
+): Unsubscribe {
+  let firestoreList: RenewalRequestItem[] = [];
+  let centersEmbeddedList: RenewalRequestItem[] = [];
+
+  const mergeAndEmit = () => {
+    const map = new Map<string, RenewalRequestItem>();
+    const deletedIds = getDeletedRenewalIds();
+
+    // Local cache
+    for (const item of getLocalRenewalRequests()) {
+      if (item && item.id && !deletedIds.has(item.id) && !(item as any)._deleted) {
+        map.set(item.id, item);
+      }
+    }
+
+    // Embedded in centers
+    for (const item of centersEmbeddedList) {
+      if (item && item.id && !deletedIds.has(item.id) && !(item as any)._deleted) {
+        map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+      }
+    }
+
+    // Root renewal_requests collection (source of truth)
+    for (const item of firestoreList) {
+      if (item && item.id && !deletedIds.has(item.id) && !(item as any)._deleted) {
+        map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+      }
+    }
+
+    const merged = Array.from(map.values()).sort((a, b) => {
+      const tA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : Number(a.id.split('_').pop() || 0);
+      const tB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : Number(b.id.split('_').pop() || 0);
+      return tB - tA;
+    });
+
+    onUpdate(merged);
+  };
+
+  const unsubRenewal = onSnapshot(
+    collection(db, 'renewal_requests'),
+    (snap) => {
+      firestoreList = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as any) }))
+        .filter((r) => !r._deleted);
+      mergeAndEmit();
+    },
+    () => {
+      mergeAndEmit();
+    }
+  );
+
+  const unsubCenters = onSnapshot(
+    collection(db, 'centers'),
+    (snap) => {
+      const extracted: RenewalRequestItem[] = [];
+      snap.docs.forEach((d) => {
+        const data = d.data() as any;
+        if (data?.latestRenewalRequest && data.latestRenewalRequest.id && !data.latestRenewalRequest._deleted) {
+          extracted.push(data.latestRenewalRequest as RenewalRequestItem);
+        }
+      });
+      centersEmbeddedList = extracted;
+      mergeAndEmit();
+    },
+    () => {}
+  );
+
+  const handleLocalEvent = () => mergeAndEmit();
+  window.addEventListener('tt_hocgioi_renewal_requests_updated', handleLocalEvent);
+
+  mergeAndEmit();
+
+  return () => {
+    unsubRenewal();
+    unsubCenters();
+    window.removeEventListener('tt_hocgioi_renewal_requests_updated', handleLocalEvent);
+  };
+}
+
+/**
+ * Super Admin phê duyệt yêu cầu gia hạn -> Tự động cộng thêm số tháng vào hạn sử dụng của Trung tâm
+ * và đồng bộ phản hồi của Super Admin lên Firebase
+ */
+export async function approveRenewalRequest(
+  request: RenewalRequestItem,
+  adminFeedback?: string
+): Promise<string> {
+  await ensureAuthSession('super_admin');
+
+  const months = Number(request.months) || 12;
+  const newPackagePlan = `${months} Tháng`;
+  const feedbackText = String(adminFeedback ?? request.adminFeedback ?? '').trim();
+  const respondedAtStr = new Date().toLocaleString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+
+  // 1. Cộng thêm số tháng và cập nhật tên gói cước mới vào hạn bản quyền của trung tâm
+  const newExpiryDate = await renewCenterSubscription(request.centerId, months, newPackagePlan);
+
+  // 2. Cập nhật trạng thái yêu cầu và phản hồi của Super Admin trên Firestore
+  const syncApprovalToFirestore = async (targetDb: typeof db) => {
+    const reqRef = doc(targetDb, 'renewal_requests', request.id);
+    await setDoc(
+      reqRef,
+      {
+        status: 'approved',
+        newExpiryDate,
+        adminFeedback: feedbackText,
+        respondedAtStr,
+        respondedAt: serverTimestamp(),
+        approvedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (request.centerId) {
+      const centerRef = doc(targetDb, 'centers', request.centerId);
+      await updateDoc(centerRef, {
+        packagePlan: newPackagePlan,
+        'latestRenewalRequest.status': 'approved',
+        'latestRenewalRequest.newExpiryDate': newExpiryDate,
+        'latestRenewalRequest.adminFeedback': feedbackText,
+        'latestRenewalRequest.respondedAtStr': respondedAtStr,
+        'latestRenewalRequest.updatedAt': Date.now(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+  };
+
+  try {
+    await syncApprovalToFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(request.centerId);
+      await syncApprovalToFirestore(privDb);
+    } catch (err) {
+      console.warn('Lưu ý đồng bộ duyệt gia hạn lên Firestore:', err);
+    }
+  }
+
+  // 3. Cập nhật local cache
+  const updatedLocal = getLocalRenewalRequests().map((r) =>
+    r.id === request.id
+      ? {
+          ...r,
+          status: 'approved' as const,
+          newExpiryDate,
+          adminFeedback: feedbackText,
+          respondedAtStr,
+        }
+      : r
+  );
+  saveLocalRenewalRequests(updatedLocal);
+
+  return newExpiryDate;
+}
+
+/**
+ * Super Admin từ chối yêu cầu gia hạn và đồng bộ phản hồi lên Firebase
+ */
+export async function rejectRenewalRequest(
+  request: RenewalRequestItem,
+  adminFeedback?: string
+): Promise<void> {
+  await ensureAuthSession('super_admin');
+
+  const feedbackText = String(adminFeedback ?? request.adminFeedback ?? '').trim();
+  const respondedAtStr = new Date().toLocaleString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+
+  const syncRejectionToFirestore = async (targetDb: typeof db) => {
+    const reqRef = doc(targetDb, 'renewal_requests', request.id);
+    await setDoc(
+      reqRef,
+      {
+        status: 'rejected',
+        adminFeedback: feedbackText,
+        respondedAtStr,
+        respondedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (request.centerId) {
+      const centerRef = doc(targetDb, 'centers', request.centerId);
+      await updateDoc(centerRef, {
+        'latestRenewalRequest.status': 'rejected',
+        'latestRenewalRequest.adminFeedback': feedbackText,
+        'latestRenewalRequest.respondedAtStr': respondedAtStr,
+        'latestRenewalRequest.updatedAt': Date.now(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+  };
+
+  try {
+    await syncRejectionToFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(request.centerId);
+      await syncRejectionToFirestore(privDb);
+    } catch (err) {
+      console.warn('Lưu ý đồng bộ từ chối gia hạn lên Firestore:', err);
+    }
+  }
+
+  const updatedLocal = getLocalRenewalRequests().map((r) =>
+    r.id === request.id
+      ? {
+          ...r,
+          status: 'rejected' as const,
+          adminFeedback: feedbackText,
+          respondedAtStr,
+        }
+      : r
+  );
+  saveLocalRenewalRequests(updatedLocal);
+}
+
+/**
+ * Hủy / Xóa bản ghi yêu cầu gia hạn (dùng cho cả Center Admin hủy yêu cầu và Super Admin xóa yêu cầu)
+ */
+export async function deleteRenewalRequest(request: RenewalRequestItem): Promise<void> {
+  // 1. Cập nhật ngay lập tức ở bộ nhớ cục bộ để UI phản hồi tức thì
+  addDeletedRenewalId(request.id);
+  const updatedLocal = getLocalRenewalRequests().filter((r) => r.id !== request.id);
+  saveLocalRenewalRequests(updatedLocal);
+
+  try {
+    await ensureAuthSession();
+  } catch {}
+
+  const removeFromFirestore = async (targetDb: typeof db) => {
+    try {
+      await deleteDoc(doc(targetDb, 'renewal_requests', request.id));
+    } catch {
+      await setDoc(doc(targetDb, 'renewal_requests', request.id), { _deleted: true }, { merge: true });
+    }
+
+    if (request.centerId) {
+      try {
+        const centerRef = doc(targetDb, 'centers', request.centerId);
+        const snap = await getDoc(centerRef);
+        if (snap.exists()) {
+          const data = snap.data() as any;
+          if (!data?.latestRenewalRequest || data.latestRenewalRequest.id === request.id) {
+            await updateDoc(centerRef, {
+              latestRenewalRequest: deleteField(),
+            });
+          }
+        }
+      } catch {}
+    }
+  };
+
+  try {
+    await removeFromFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(request.centerId);
+      await removeFromFirestore(privDb);
+    } catch {}
+  }
+}
+
+export const cancelRenewalRequest = deleteRenewalRequest;
+
+
 

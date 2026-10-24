@@ -48,6 +48,7 @@ export const ExportMonthlyExcelModal: React.FC<ExportMonthlyExcelModalProps> = (
   const [includeFinancials, setIncludeFinancials] = useState<boolean>(showFinancials);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportSuccess, setExportSuccess] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // Danh sách các tháng để chọn (năm hiện tại và các năm lân cận)
   const monthOptions = useMemo(() => {
@@ -97,6 +98,7 @@ export const ExportMonthlyExcelModal: React.FC<ExportMonthlyExcelModalProps> = (
     try {
       setIsExporting(true);
       setExportSuccess(null);
+      setExportError(null);
 
       // Gọi service xuất file Excel nhiều sheet
       const result = await exportAllClassesAttendanceWorkbook({
@@ -115,13 +117,12 @@ export const ExportMonthlyExcelModal: React.FC<ExportMonthlyExcelModalProps> = (
         `✓ Đã xuất thành công file "${result.filename}" với ${result.classSheetCount} sheet lớp học (chuẩn in A4 nằm ngang)!`
       );
 
-      // Tự động đóng modal sau 2.5s nếu người dùng không bấm
       setTimeout(() => {
         setIsExporting(false);
       }, 700);
     } catch (error) {
       console.error('Lỗi khi xuất file Excel tổng hợp:', error);
-      alert('Có lỗi xảy ra khi tạo file Excel. Vui lòng thử lại!');
+      setExportError('Có lỗi xảy ra khi tạo file Excel. Vui lòng thử lại!');
       setIsExporting(false);
     }
   };
@@ -168,6 +169,14 @@ export const ExportMonthlyExcelModal: React.FC<ExportMonthlyExcelModalProps> = (
             <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-bold flex items-center gap-2.5 shadow-2xs">
               <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
               <span>{exportSuccess}</span>
+            </div>
+          )}
+
+          {/* THÔNG BÁO LỖI NẾU CÓ */}
+          {exportError && (
+            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-800 text-xs font-bold flex items-center gap-2.5 shadow-2xs">
+              <Info className="w-5 h-5 text-rose-600 shrink-0" />
+              <span>{exportError}</span>
             </div>
           )}
 

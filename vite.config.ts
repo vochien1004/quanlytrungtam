@@ -20,8 +20,10 @@ export default defineConfig(() => {
         'firebase/auth',
         'firebase/storage',
         'lucide-react',
+        'xlsx-js-style',
+        'jszip',
       ],
-      exclude: ['pdfjs-dist', 'xlsx', 'xlsx-js-style', 'mammoth'],
+      exclude: ['pdfjs-dist', 'xlsx', 'mammoth'],
     },
     build: {
       chunkSizeWarningLimit: 1200,

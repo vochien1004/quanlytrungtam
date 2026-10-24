@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Building2, 
   MapPin, 
@@ -18,11 +18,19 @@ import {
   Sparkles,
   AlertCircle,
   AlertTriangle,
-  Trash2
+  Trash2,
+  FileText
 } from 'lucide-react';
-import { CenterItem, updateCenter } from '../../services/firebaseService';
+import {
+  CenterItem,
+  updateCenter,
+  RenewalRequestItem,
+  getRealtimeRenewalRequests
+} from '../../services/firebaseService';
 import { UserAccount } from '../../services/authService';
 import { DeleteCenterModal } from './DeleteCenterModal';
+import { CenterRenewalModal } from './CenterRenewalModal';
+import { CenterRenewalListModal } from './CenterRenewalListModal';
 
 interface CenterManagementViewProps {
   centers: CenterItem[];
@@ -31,6 +39,7 @@ interface CenterManagementViewProps {
   classesCount?: number;
   teachersCount?: number;
   studentsCount?: number;
+  openRenewalListTrigger?: number;
   onSelectCenter?: (centerId: string) => void;
   onShowToast?: (msg: string, type?: 'success' | 'info' | 'error') => void;
   onDeleteCenterSuccess?: (deletedCenterId: string) => void;
@@ -43,6 +52,7 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
   classesCount = 0,
   teachersCount = 0,
   studentsCount = 0,
+  openRenewalListTrigger = 0,
   onShowToast,
   onDeleteCenterSuccess,
 }) => {
@@ -63,11 +73,57 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
   };
 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isRenewalModalOpen, setIsRenewalModalOpen] = useState(false);
+  const [isRenewalHighlighted, setIsRenewalHighlighted] = useState(false);
+  const [allRenewalRequests, setAllRenewalRequests] = useState<RenewalRequestItem[]>([]);
+  const renewalListSectionRef = useRef<HTMLDivElement>(null);
   const [name, setName] = useState(currentCenter.name);
   const [address, setAddress] = useState(currentCenter.address || '');
   const [phone, setPhone] = useState(currentCenter.phone || '');
   const [email, setEmail] = useState(currentCenter.email || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const scrollToRenewalSection = useCallback(() => {
+    setTimeout(() => {
+      renewalListSectionRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+      setIsRenewalHighlighted(true);
+      setTimeout(() => {
+        setIsRenewalHighlighted(false);
+      }, 2500);
+    }, 100);
+  }, []);
+
+  // Lắng nghe danh sách đăng ký gia hạn theo thời gian thực
+  useEffect(() => {
+    const unsub = getRealtimeRenewalRequests((list) => {
+      setAllRenewalRequests(list);
+    });
+    return () => unsub();
+  }, []);
+
+  // Tự động cuộn đến phần Danh sách đăng ký gia hạn khi được chuyển hướng sau khi gửi gia hạn thành công
+  useEffect(() => {
+    if (openRenewalListTrigger > 0) {
+      scrollToRenewalSection();
+    }
+  }, [openRenewalListTrigger, scrollToRenewalSection]);
+
+  // Lọc danh sách yêu cầu gia hạn của trường hiện tại
+  const centerRenewalRequests = allRenewalRequests.filter((req) => {
+    const matchId = req.centerId && currentCenter.id && req.centerId === currentCenter.id;
+    const matchCode =
+      req.centerCode &&
+      currentCenter.code &&
+      req.centerCode.toUpperCase() === currentCenter.code.toUpperCase();
+    return Boolean(matchId || matchCode);
+  });
+
+  const pendingRenewalCount = centerRenewalRequests.filter(
+    (r) => r.status === 'pending' || !r.status
+  ).length;
 
   const handleOpenEdit = () => {
     setName(currentCenter.name);
@@ -131,6 +187,48 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
 
   const isSuspended = currentCenter.status === 'suspended';
 
+  // Xác định yêu cầu gia hạn đã được duyệt gần nhất của trường
+  const latestApprovedRenewal =
+    centerRenewalRequests.find((r) => r.status === 'approved') ||
+    ((currentCenter as any)?.latestRenewalRequest?.status === 'approved'
+      ? (currentCenter as any).latestRenewalRequest
+      : null);
+
+  // Xác định tên Gói cước đang sử dụng thực tế (cập nhật ngay khi yêu cầu gia hạn đã được duyệt)
+  const rawPackagePlan = String(currentCenter.packagePlan || '').trim();
+  const isTrialPlanName = /trial|dùng thử|dung thu/i.test(rawPackagePlan);
+
+  let resolvedPlanCode = rawPackagePlan;
+  if (latestApprovedRenewal && Number(latestApprovedRenewal.months) > 0) {
+    resolvedPlanCode = `${Number(latestApprovedRenewal.months)} Tháng`;
+  } else if (isTrialPlanName && daysRemaining !== null && daysRemaining > 35) {
+    if (daysRemaining > 200) {
+      resolvedPlanCode = '12 Tháng';
+    } else if (daysRemaining > 100) {
+      resolvedPlanCode = '6 Tháng';
+    } else {
+      resolvedPlanCode = '3 Tháng';
+    }
+  }
+
+  const activePackageDisplayName = resolvedPlanCode
+    ? resolvedPlanCode.toLowerCase().startsWith('gói ')
+      ? resolvedPlanCode
+      : `Gói ${resolvedPlanCode}`
+    : 'Gói Tiêu Chuẩn (Standard)';
+
+  // Tự động đồng bộ lại packagePlan lên Firestore nếu dữ liệu cũ vẫn lưu "Trial" sau khi đã duyệt gia hạn
+  useEffect(() => {
+    if (
+      currentCenter?.id &&
+      isTrialPlanName &&
+      resolvedPlanCode &&
+      resolvedPlanCode !== rawPackagePlan
+    ) {
+      updateCenter(currentCenter.id, { packagePlan: resolvedPlanCode }).catch(() => {});
+    }
+  }, [currentCenter?.id, isTrialPlanName, resolvedPlanCode, rawPackagePlan]);
+
   return (
     <div className="space-y-6 animate-fade-in text-slate-800 pb-12">
       {/* CẢNH BÁO NỔI BẬT ĐẦU TRANG CHO CENTER ADMIN NẾU SẮP HẾT HẠN HOẶC ĐÃ HẾT HẠN */}
@@ -157,13 +255,14 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
               </p>
             </div>
           </div>
-          <a
-            href="tel:19006868"
+          <button
+            type="button"
+            onClick={() => setIsRenewalModalOpen(true)}
             className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs shadow-md transition-all cursor-pointer shrink-0"
           >
-            <Phone className="w-4 h-4" />
-            <span>Hotline Gia Hạn: 1900 6868</span>
-          </a>
+            <Crown className="w-4 h-4" />
+            <span>Gia hạn ngay</span>
+          </button>
         </div>
       ) : isExpiringSoon ? (
         <div className="rounded-3xl bg-gradient-to-r from-amber-500/20 via-orange-500/15 to-amber-500/10 border-2 border-amber-400 p-5 md:p-6 shadow-md flex flex-wrap items-center justify-between gap-4 animate-fade-in">
@@ -190,13 +289,14 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <a
-              href="tel:19006868"
+            <button
+              type="button"
+              onClick={() => setIsRenewalModalOpen(true)}
               className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shadow-md transition-all cursor-pointer"
             >
-              <Phone className="w-4 h-4" />
-              <span>Gia Hạn: 1900 6868</span>
-            </a>
+              <Crown className="w-4 h-4" />
+              <span>Gia hạn ngay</span>
+            </button>
           </div>
         </div>
       ) : null}
@@ -224,14 +324,25 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={handleOpenEdit}
-            className="flex items-center gap-2 rounded-2xl bg-white hover:bg-slate-100 text-[#0B486B] font-black px-5 py-3.5 text-xs shadow-lg transition-all cursor-pointer shrink-0"
-          >
-            <Edit3 className="w-4 h-4 text-[#0072B5]" />
-            <span>Cập Nhật Thông Tin Trường</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={scrollToRenewalSection}
+              className="flex items-center gap-2 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black px-5 py-3.5 text-xs shadow-lg transition-all cursor-pointer shrink-0"
+            >
+              <FileText className="w-4 h-4 text-slate-900" />
+              <span>Danh sách đăng ký gia hạn ({centerRenewalRequests.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenEdit}
+              className="flex items-center gap-2 rounded-2xl bg-white hover:bg-slate-100 text-[#0B486B] font-black px-5 py-3.5 text-xs shadow-lg transition-all cursor-pointer shrink-0"
+            >
+              <Edit3 className="w-4 h-4 text-[#0072B5]" />
+              <span>Cập Nhật Thông Tin Trường</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -386,13 +497,14 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
                       Thời hạn bản quyền của trường sẽ kết thúc vào <strong>{currentCenter.expiryDate}</strong> ({daysRemaining === 0 ? 'hôm nay' : `chỉ còn ${daysRemaining} ngày nữa`}). Vui lòng liên hệ <strong>Super Admin</strong> để gia hạn, tránh làm gián đoạn việc giảng dạy và điểm danh.
                     </p>
                     <div className="pt-0.5 flex flex-wrap items-center gap-2">
-                      <a
-                        href="tel:19006868"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black transition-colors shadow-xs"
+                      <button
+                        type="button"
+                        onClick={() => setIsRenewalModalOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black transition-colors shadow-xs cursor-pointer"
                       >
-                        <Phone className="w-3.5 h-3.5" />
-                        <span>Hotline Gia Hạn: 1900 6868 / 0912.345.678</span>
-                      </a>
+                        <Crown className="w-3.5 h-3.5" />
+                        <span>Gia hạn ngay</span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -419,13 +531,14 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
                       Thời hạn bản quyền đã kết thúc vào ngày <strong>{currentCenter.expiryDate}</strong>. Hệ thống có thể bị tạm ngưng truy cập. Vui lòng liên hệ ngay Quản trị viên Super Admin để kích hoạt lại.
                     </p>
                     <div className="pt-0.5 flex flex-wrap items-center gap-2">
-                      <a
-                        href="tel:19006868"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black transition-colors shadow-xs"
+                      <button
+                        type="button"
+                        onClick={() => setIsRenewalModalOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black transition-colors shadow-xs cursor-pointer"
                       >
-                        <Phone className="w-3.5 h-3.5" />
-                        <span>Hotline Hỗ Trợ: 1900 6868 / 0912.345.678</span>
-                      </a>
+                        <Crown className="w-3.5 h-3.5" />
+                        <span>Gia hạn ngay</span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -433,15 +546,55 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
             )}
 
             <div className="space-y-4">
-              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200/70">
+              <div className="flex flex-wrap items-center justify-between gap-2.5 p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200/70">
                 <div>
                   <div className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Gói Cước Đang Sử Dụng</div>
                   <div className="text-base font-black text-amber-950">
-                    {currentCenter.packagePlan ? `Gói ${currentCenter.packagePlan}` : 'Gói Tiêu Chuẩn (Standard)'}
+                    {activePackageDisplayName}
                   </div>
                 </div>
-                <Crown className="w-6 h-6 text-amber-500" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={scrollToRenewalSection}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-blue-50 text-[#0B486B] border border-slate-200 font-black text-xs shadow-2xs transition-all cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-[#0072B5]" />
+                    <span>Danh sách gia hạn ({centerRenewalRequests.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsRenewalModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs shadow-xs transition-all cursor-pointer"
+                  >
+                    <Crown className="w-4 h-4" />
+                    <span>Gia hạn ngay</span>
+                  </button>
+                </div>
               </div>
+
+              {pendingRenewalCount > 0 && (
+                <div className="flex items-center justify-between gap-3 p-3.5 rounded-2xl bg-blue-50/90 border border-blue-200 text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <Clock className="w-4 h-4 text-[#0072B5] shrink-0" />
+                    <div>
+                      <div className="font-black text-[#0B486B]">
+                        Đang có {pendingRenewalCount} yêu cầu đăng ký gia hạn chờ duyệt
+                      </div>
+                      <div className="text-[11px] text-slate-600 font-medium">
+                        Nhấn để xem chi tiết thời gian đăng ký, gói cước, tình trạng hoặc hủy yêu cầu
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={scrollToRenewalSection}
+                    className="px-3 py-1.5 rounded-xl bg-[#0072B5] hover:bg-[#0B486B] text-white font-black text-[11px] whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Xem danh sách
+                  </button>
+                </div>
+              )}
 
               <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80">
                 <div>
@@ -545,6 +698,17 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* DANH SÁCH ĐĂNG KÝ GIA HẠN BẢN QUYỀN (HIỂN THỊ TRỰC TIẾP TRÊN TRANG) */}
+      <div ref={renewalListSectionRef} className="scroll-mt-6">
+        <CenterRenewalListModal
+          center={currentCenter}
+          requests={centerRenewalRequests}
+          onOpenNewRenewal={() => setIsRenewalModalOpen(true)}
+          onShowToast={onShowToast}
+          highlighted={isRenewalHighlighted}
+        />
       </div>
 
       {/* VÙNG NGUY HIỂM (SUPER ADMIN ONLY): XÓA TRUNG TÂM TOÀN DIỆN */}
@@ -703,6 +867,19 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
           onShowToast={onShowToast}
         />
       )}
+
+      {/* MODAL: FORM ĐĂNG KÝ GIA HẠN BẢN QUYỀN */}
+      <CenterRenewalModal
+        isOpen={isRenewalModalOpen}
+        onClose={() => setIsRenewalModalOpen(false)}
+        center={currentCenter}
+        currentUser={currentUser}
+        onShowToast={onShowToast}
+        onSuccess={() => {
+          setIsRenewalModalOpen(false);
+          scrollToRenewalSection();
+        }}
+      />
     </div>
   );
 };
