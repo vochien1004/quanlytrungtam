@@ -105,6 +105,9 @@ export interface CenterItem {
   adminPassword?: string;
   adminUid?: string;
   ownerUid?: string;
+  bankId?: string;
+  accountNo?: string;
+  accountName?: string;
   createdAt?: any;
   updatedAt?: any;
 }
@@ -4328,5 +4331,654 @@ export async function deleteRenewalRequest(request: RenewalRequestItem): Promise
 
 export const cancelRenewalRequest = deleteRenewalRequest;
 
+// ============================================================================
+// 9. QUẢN LÝ CHỐT SỔ HỌC PHÍ THÁNG (CENTER ADMIN -> PHỤ HUYNH)
+// ============================================================================
+
+export interface StudentTuitionSnapshot {
+  studentId: string;
+  studentCode?: string;
+  studentName: string;
+  parentPhone?: string;
+  classId: string;
+  className: string;
+  month: string; // 'YYYY-MM'
+  attendedSessions: number; // Số buổi học có mặt
+  pricePerSession: number; // Đơn giá / buổi
+  totalTuition: number; // Học phí = attendedSessions * pricePerSession
+}
+
+export interface MonthlyTuitionLockItem {
+  id: string; // `${centerId}_${month}_${classId}`
+  centerId: string;
+  month: string; // 'YYYY-MM'
+  classId: string;
+  className?: string;
+  isFinalized: boolean;
+  pricePerSession: number;
+  finalizedBy?: string;
+  finalizedAtStr?: string;
+  finalizedAt?: any;
+  updatedAt?: any;
+  studentsMap?: Record<string, StudentTuitionSnapshot>;
+}
+
+const LOCAL_TUITION_LOCKS_KEY = 'tt_hocgioi_monthly_tuition_locks_v1';
+
+function getLocalTuitionLocks(): MonthlyTuitionLockItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_TUITION_LOCKS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => x && x.id) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalTuitionLocks(list: MonthlyTuitionLockItem[]): void {
+  try {
+    localStorage.setItem(LOCAL_TUITION_LOCKS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('tt_hocgioi_tuition_locks_updated'));
+  } catch {}
+}
+
+/**
+ * Hàm tính toán đồng nhất Số buổi học có mặt (tính tiền) của 1 học sinh trong tháng (YYYY-MM)
+ * Đảm bảo đồng bộ tuyệt đối 100% giữa:
+ * 1) Bảng điểm danh của Giáo viên (TeacherWorkstationHub)
+ * 2) Bảng điểm danh & Học phí của Center Admin (ReportsView)
+ * 3) Bảng điểm danh & Modal Thanh toán học phí Tháng của Phụ huynh (ParentPortalView)
+ */
+export function calculateStudentMonthlyAttendedSessions(params: {
+  month: string;
+  student: { id?: string; name?: string; classId?: string; className?: string } | null | undefined;
+  attendanceRecords: any[];
+  classInfo?: { id?: string; name?: string; classCode?: string; code?: string } | null;
+}): number {
+  const { month, student, attendanceRecords, classInfo } = params;
+  if (!month || !student || (!student.id && !student.name)) return 0;
+
+  const [yearStr, monthStr] = month.split('-');
+  const year = parseInt(yearStr || '2026', 10);
+  const m = parseInt(monthStr || '10', 10);
+  const totalDays = new Date(year, m, 0).getDate();
+
+  const stId = String(student.id || '').trim();
+  const stName = String(student.name || '').trim().toLowerCase();
+  const cId = String(classInfo?.id || student.classId || '').trim();
+  const cCode = String(classInfo?.classCode || classInfo?.code || '').trim().toLowerCase();
+  const cName = String(classInfo?.name || student.className || '').trim().toLowerCase();
+
+  // Lọc các bản ghi điểm danh thuộc tháng và lớp/học sinh này
+  const monthlyDocs = (attendanceRecords || []).filter((att) => {
+    if (!att) return false;
+    const dateStr = String(att.date || att.sessionDate || '');
+    const matchMonth = att.sessionMonth === month || dateStr.startsWith(month);
+    if (!matchMonth) return false;
+
+    // 1. Có mặt trực tiếp trong mảng records của buổi học
+    if (Array.isArray(att.records) && att.records.length > 0) {
+      const foundInRecords = att.records.some((r: any) => {
+        if (!r) return false;
+        const rStId = String(r.studentId || r.id || '').trim();
+        const rStName = String(r.studentName || r.name || '').trim().toLowerCase();
+        if (stId && rStId && rStId === stId) return true;
+        if (stName && rStName && rStName === stName) return true;
+        return false;
+      });
+      if (foundInRecords) return true;
+    }
+
+    // 2. Bản ghi đơn (flat record)
+    if (stId && att.studentId && String(att.studentId).trim() === stId) return true;
+    if (stName && att.studentName && String(att.studentName).trim().toLowerCase() === stName) return true;
+
+    // 3. Khớp theo classId / classCode
+    if (att.classId) {
+      const attCId = String(att.classId).trim();
+      if (cId && attCId === cId) return true;
+      if (cCode && attCId.toLowerCase() === cCode) return true;
+    }
+
+    // 4. Khớp theo className
+    if (att.className && cName && cName !== 'chưa phân lớp' && cName !== 'chưa xếp lớp' && cName !== 'chưa có lớp') {
+      const attCName = String(att.className).trim().toLowerCase();
+      if (attCName === cName) return true;
+      const cleanAtt = attCName.replace(/^lớp\s+/i, '').trim();
+      const cleanC = cName.replace(/^lớp\s+/i, '').trim();
+      if (cleanAtt && cleanC && cleanAtt === cleanC) return true;
+    }
+
+    return false;
+  });
+
+  let attendedCount = 0;
+
+  for (let d = 1; d <= totalDays; d++) {
+    const dStr = d.toString().padStart(2, '0');
+    const iso = `${month}-${dStr}`;
+    const rec = monthlyDocs.find((r) => (r.date || r.sessionDate) === iso);
+    if (!rec) continue;
+
+    const sRec =
+      rec?.records?.find((r: any) => {
+        if (!r) return false;
+        const rStId = String(r.studentId || r.id || '').trim();
+        const rStName = String(r.studentName || r.name || '').trim().toLowerCase();
+        return (stId && rStId && rStId === stId) || (stName && rStName && rStName === stName);
+      }) || (stId && String(rec?.studentId || '').trim() === stId ? rec : null);
+
+    if (sRec) {
+      const st = String(sRec.status || '').toLowerCase();
+      if (st === 'present' || st === 'late' || st.includes('có mặt')) {
+        attendedCount++;
+      }
+    }
+  }
+
+  return attendedCount;
+}
+
+/**
+ * Center Admin thực hiện Chốt sổ học phí tháng cho 1 lớp (hoặc danh sách các lớp)
+ * và truyền dữ liệu sang tài khoản Phụ huynh
+ */
+export async function finalizeMonthlyTuition(payload: {
+  centerId: string;
+  month: string; // 'YYYY-MM'
+  classId: string;
+  className?: string;
+  pricePerSession: number;
+  studentsList: StudentTuitionSnapshot[];
+  finalizedBy?: string;
+}): Promise<MonthlyTuitionLockItem> {
+  try {
+    await ensureAuthSession('center_admin');
+  } catch {}
+
+  const cleanCenterId = (payload.centerId || 'HG01').trim();
+  const cleanMonth = payload.month.trim();
+  const cleanClassId = payload.classId.trim();
+  const lockId = `${cleanCenterId}_${cleanMonth}_${cleanClassId}`;
+
+  const nowStr = new Date().toLocaleString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+
+  const studentsMap: Record<string, StudentTuitionSnapshot> = {};
+  (payload.studentsList || []).forEach((s) => {
+    if (s && s.studentId) {
+      studentsMap[s.studentId] = s;
+    }
+  });
+
+  const lockItem: MonthlyTuitionLockItem = {
+    id: lockId,
+    centerId: cleanCenterId,
+    month: cleanMonth,
+    classId: cleanClassId,
+    className: payload.className || '',
+    isFinalized: true,
+    pricePerSession: Number(payload.pricePerSession) || 40000,
+    finalizedBy: payload.finalizedBy || 'Quản trị trung tâm',
+    finalizedAtStr: nowStr,
+    studentsMap,
+  };
+
+  // 1. Lưu ngay vào bộ đệm localStorage để UI cập nhật tức thì
+  const currentLocal = getLocalTuitionLocks().filter((x) => x.id !== lockId);
+  saveLocalTuitionLocks([lockItem, ...currentLocal]);
+
+  // 2. Đồng bộ lên Cloud Firestore tại `/centers/{centerId}/tuition_locks/{lockId}` và `/tuition_locks/{lockId}`
+  const writeLockToFirestore = async (targetDb: typeof db) => {
+    const subRef = doc(targetDb, 'centers', cleanCenterId, 'tuition_locks', lockId);
+    await setDoc(
+      subRef,
+      {
+        ...lockItem,
+        finalizedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const rootRef = doc(targetDb, 'tuition_locks', lockId);
+    await setDoc(
+      rootRef,
+      {
+        ...lockItem,
+        finalizedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  };
+
+  try {
+    await writeLockToFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(cleanCenterId);
+      await writeLockToFirestore(privDb);
+    } catch (err) {
+      console.warn('Lưu ý ghi chốt sổ học phí lên Firestore:', err);
+    }
+  }
+
+  return lockItem;
+}
+
+/**
+ * Center Admin mở khóa (hủy chốt sổ tạm thời) để cập nhật lại dữ liệu học phí tháng
+ */
+export async function unfinalizeMonthlyTuition(params: {
+  centerId: string;
+  month: string;
+  classId: string;
+}): Promise<void> {
+  try {
+    await ensureAuthSession('center_admin');
+  } catch {}
+
+  const cleanCenterId = (params.centerId || 'HG01').trim();
+  const cleanMonth = params.month.trim();
+  const cleanClassId = params.classId.trim();
+  const lockId = `${cleanCenterId}_${cleanMonth}_${cleanClassId}`;
+
+  // 1. Cập nhật ngay ở bộ nhớ cục bộ
+  const currentLocal = getLocalTuitionLocks().map((x) =>
+    x.id === lockId ? { ...x, isFinalized: false } : x
+  );
+  saveLocalTuitionLocks(currentLocal);
+
+  // 2. Đồng bộ trạng thái isFinalized = false lên Firestore
+  const updateUnlockInFirestore = async (targetDb: typeof db) => {
+    const subRef = doc(targetDb, 'centers', cleanCenterId, 'tuition_locks', lockId);
+    await setDoc(
+      subRef,
+      {
+        id: lockId,
+        centerId: cleanCenterId,
+        month: cleanMonth,
+        classId: cleanClassId,
+        isFinalized: false,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const rootRef = doc(targetDb, 'tuition_locks', lockId);
+    await setDoc(
+      rootRef,
+      {
+        id: lockId,
+        centerId: cleanCenterId,
+        month: cleanMonth,
+        classId: cleanClassId,
+        isFinalized: false,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  };
+
+  try {
+    await updateUnlockInFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(cleanCenterId);
+      await updateUnlockInFirestore(privDb);
+    } catch {}
+  }
+}
+
+/**
+ * Lắng nghe trạng thái Chốt sổ học phí tháng theo thời gian thực (Realtime)
+ */
+export function getRealtimeMonthlyTuitionLocks(
+  centerId: string,
+  onUpdate: (locks: MonthlyTuitionLockItem[]) => void
+): Unsubscribe {
+  const cleanCenterId = (centerId || '').trim();
+  let subCollectionList: MonthlyTuitionLockItem[] = [];
+  let rootCollectionList: MonthlyTuitionLockItem[] = [];
+
+  const mergeAndEmit = () => {
+    const map = new Map<string, MonthlyTuitionLockItem>();
+
+    // Local cache
+    for (const item of getLocalTuitionLocks()) {
+      if (item && item.id && (!cleanCenterId || item.centerId === cleanCenterId)) {
+        map.set(item.id, item);
+      }
+    }
+
+    // Root collection
+    for (const item of rootCollectionList) {
+      if (item && item.id && (!cleanCenterId || item.centerId === cleanCenterId)) {
+        map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+      }
+    }
+
+    // Center subcollection (highest priority)
+    for (const item of subCollectionList) {
+      if (item && item.id && (!cleanCenterId || item.centerId === cleanCenterId)) {
+        map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+      }
+    }
+
+    onUpdate(Array.from(map.values()));
+  };
+
+  let unsubSub: Unsubscribe | null = null;
+  if (cleanCenterId) {
+    unsubSub = onSnapshot(
+      collection(db, 'centers', cleanCenterId, 'tuition_locks'),
+      (snap) => {
+        subCollectionList = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        mergeAndEmit();
+      },
+      () => {
+        mergeAndEmit();
+      }
+    );
+  }
+
+  const unsubRoot = onSnapshot(
+    collection(db, 'tuition_locks'),
+    (snap) => {
+      rootCollectionList = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+      mergeAndEmit();
+    },
+    () => {
+      mergeAndEmit();
+    }
+  );
+
+  const handleLocalEvent = () => mergeAndEmit();
+  window.addEventListener('tt_hocgioi_tuition_locks_updated', handleLocalEvent);
+
+  mergeAndEmit();
+
+  return () => {
+    if (unsubSub) unsubSub();
+    unsubRoot();
+    window.removeEventListener('tt_hocgioi_tuition_locks_updated', handleLocalEvent);
+  };
+}
+
+// ============================================================================
+// 10. THIẾT LẬP THANH TOÁN CỦA TRUNG TÂM (MÃ NGÂN HÀNG, SỐ TÀI KHOẢN, TÊN CHỦ TK)
+// ============================================================================
+
+export interface CenterPaymentSettings {
+  centerId: string;
+  bankId: string;       // Mã ngân hàng (VD: VBA, VCB, MB, TCB, ACB, BIDV...)
+  accountNo: string;    // Số tài khoản ngân hàng
+  accountName: string;  // Tên chủ tài khoản
+  updatedAt?: any;
+  updatedBy?: string;
+}
+
+const LOCAL_PAYMENT_SETTINGS_KEY = 'tt_hocgioi_payment_settings_v1';
+
+function getLocalPaymentSettingsMap(): Record<string, CenterPaymentSettings> {
+  try {
+    const raw = localStorage.getItem(LOCAL_PAYMENT_SETTINGS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalPaymentSettingsForCenter(centerId: string, settings: CenterPaymentSettings): void {
+  try {
+    const map = getLocalPaymentSettingsMap();
+    map[centerId] = settings;
+    localStorage.setItem(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(map));
+    window.dispatchEvent(new CustomEvent('tt_hocgioi_payment_settings_updated', { detail: settings }));
+  } catch {}
+}
+
+/**
+ * Lưu thông tin Thiết lập thanh toán (Mã ngân hàng, Số tài khoản, Tên chủ tài khoản) của Trung tâm lên Firebase Firestore
+ */
+export async function saveCenterPaymentSettings(
+  centerId: string,
+  data: {
+    bankId: string;
+    accountNo: string;
+    accountName: string;
+    updatedBy?: string;
+  }
+): Promise<CenterPaymentSettings> {
+  const cleanCenterId = (centerId || 'HG01').trim();
+  const cleanBankId = (data.bankId || '').trim().toUpperCase();
+  const cleanAccountNo = (data.accountNo || '').trim();
+  const cleanAccountName = (data.accountName || '').trim().toUpperCase();
+  const nowIso = new Date().toISOString();
+
+  const settingsItem: CenterPaymentSettings = {
+    centerId: cleanCenterId,
+    bankId: cleanBankId,
+    accountNo: cleanAccountNo,
+    accountName: cleanAccountName,
+    updatedAt: nowIso,
+    updatedBy: data.updatedBy || 'Center Admin',
+  };
+
+  // 1. Lưu tức thì vào bộ nhớ cục bộ để UI phản hồi ngay lập tức
+  saveLocalPaymentSettingsForCenter(cleanCenterId, settingsItem);
+
+  try {
+    await ensureAuthSession('center_admin');
+  } catch {}
+
+  const writeToFirestore = async (targetDb: typeof db) => {
+    const firestorePayload = {
+      centerId: cleanCenterId,
+      bankId: cleanBankId,
+      accountNo: cleanAccountNo,
+      accountName: cleanAccountName,
+      updatedBy: settingsItem.updatedBy,
+      updatedAt: serverTimestamp(),
+    };
+
+    // Ghi vào Subcollection chuyên biệt: /centers/{centerId}/settings/payment
+    const subDocRef = doc(targetDb, 'centers', cleanCenterId, 'settings', 'payment');
+    await setDoc(subDocRef, firestorePayload, { merge: true });
+
+    // Đồng bộ trực tiếp vào document gốc của trung tâm: /centers/{centerId}
+    const centerDocRef = doc(targetDb, 'centers', cleanCenterId);
+    await setDoc(
+      centerDocRef,
+      {
+        bankId: cleanBankId,
+        accountNo: cleanAccountNo,
+        accountName: cleanAccountName,
+        paymentSettings: {
+          bankId: cleanBankId,
+          accountNo: cleanAccountNo,
+          accountName: cleanAccountName,
+          updatedAt: nowIso,
+        },
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // Ghi dự phòng vào Root collection: /payment_settings/{centerId}
+    const rootPaymentRef = doc(targetDb, 'payment_settings', cleanCenterId);
+    await setDoc(rootPaymentRef, firestorePayload, { merge: true }).catch(() => {});
+  };
+
+  try {
+    await writeToFirestore(db);
+  } catch {
+    try {
+      const privDb = await getPrivilegedDbForCenter(cleanCenterId);
+      await writeToFirestore(privDb);
+    } catch (err) {
+      console.warn('Lưu ý khi đồng bộ thiết lập thanh toán lên Firestore:', err);
+    }
+  }
+
+  return settingsItem;
+}
+
+/**
+ * Lắng nghe Realtime thông tin Thiết lập thanh toán của Trung tâm từ Firebase Firestore
+ */
+export function getRealtimeCenterPaymentSettings(
+  centerId: string,
+  onUpdate: (settings: CenterPaymentSettings | null) => void
+): Unsubscribe {
+  const cleanCenterId = (centerId || '').trim();
+
+  let subDocData: Partial<CenterPaymentSettings> | null = null;
+  let centerDocData: Partial<CenterPaymentSettings> | null = null;
+  let rootDocData: Partial<CenterPaymentSettings> | null = null;
+  let fallbackRootData: Partial<CenterPaymentSettings> | null = null;
+
+  const mergeAndEmit = () => {
+    const localMap = getLocalPaymentSettingsMap();
+    const localKeys = Object.keys(localMap);
+    const localData =
+      (cleanCenterId && localMap[cleanCenterId]) ||
+      (localKeys.length > 0 ? localMap[localKeys[localKeys.length - 1]] : null);
+
+    // Thứ tự ưu tiên: subcollection /centers/{id}/settings/payment -> /payment_settings/{id} -> /centers/{id} -> fallback /payment_settings -> localStorage
+    const merged: CenterPaymentSettings = {
+      centerId: cleanCenterId || fallbackRootData?.centerId || localData?.centerId || 'HG01',
+      bankId:
+        subDocData?.bankId ||
+        rootDocData?.bankId ||
+        centerDocData?.bankId ||
+        fallbackRootData?.bankId ||
+        localData?.bankId ||
+        '',
+      accountNo:
+        subDocData?.accountNo ||
+        rootDocData?.accountNo ||
+        centerDocData?.accountNo ||
+        fallbackRootData?.accountNo ||
+        localData?.accountNo ||
+        '',
+      accountName:
+        subDocData?.accountName ||
+        rootDocData?.accountName ||
+        centerDocData?.accountName ||
+        fallbackRootData?.accountName ||
+        localData?.accountName ||
+        '',
+      updatedAt:
+        subDocData?.updatedAt ??
+        rootDocData?.updatedAt ??
+        centerDocData?.updatedAt ??
+        fallbackRootData?.updatedAt ??
+        localData?.updatedAt,
+      updatedBy:
+        subDocData?.updatedBy ??
+        rootDocData?.updatedBy ??
+        centerDocData?.updatedBy ??
+        fallbackRootData?.updatedBy ??
+        localData?.updatedBy,
+    };
+
+    if (merged.bankId || merged.accountNo || merged.accountName) {
+      onUpdate(merged);
+    } else {
+      onUpdate(null);
+    }
+  };
+
+  let unsubSub: Unsubscribe | null = null;
+  let unsubCenter: Unsubscribe | null = null;
+
+  if (cleanCenterId) {
+    unsubSub = onSnapshot(
+      doc(db, 'centers', cleanCenterId, 'settings', 'payment'),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data() as any;
+          subDocData = {
+            bankId: d.bankId || '',
+            accountNo: d.accountNo || '',
+            accountName: d.accountName || '',
+            updatedAt: d.updatedAt,
+            updatedBy: d.updatedBy,
+          };
+        }
+        mergeAndEmit();
+      },
+      () => mergeAndEmit()
+    );
+
+    unsubCenter = onSnapshot(
+      doc(db, 'centers', cleanCenterId),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data() as any;
+          const ps = d.paymentSettings || {};
+          if (d.bankId || d.accountNo || d.accountName || ps.bankId || ps.accountNo || ps.accountName) {
+            centerDocData = {
+              bankId: d.bankId ?? ps.bankId ?? '',
+              accountNo: d.accountNo ?? ps.accountNo ?? '',
+              accountName: d.accountName ?? ps.accountName ?? '',
+              updatedAt: ps.updatedAt || d.updatedAt,
+            };
+          }
+        }
+        mergeAndEmit();
+      },
+      () => mergeAndEmit()
+    );
+  }
+
+  const unsubRootCol = onSnapshot(
+    collection(db, 'payment_settings'),
+    (snap) => {
+      rootDocData = null;
+      fallbackRootData = null;
+      snap.docs.forEach((docSnap) => {
+        const d = docSnap.data() as any;
+        const item: Partial<CenterPaymentSettings> = {
+          centerId: d.centerId || docSnap.id,
+          bankId: d.bankId || '',
+          accountNo: d.accountNo || '',
+          accountName: d.accountName || '',
+          updatedAt: d.updatedAt,
+          updatedBy: d.updatedBy,
+        };
+        if (cleanCenterId && (docSnap.id === cleanCenterId || d.centerId === cleanCenterId)) {
+          rootDocData = item;
+        } else if (item.bankId && item.accountNo) {
+          fallbackRootData = item;
+        }
+      });
+      mergeAndEmit();
+    },
+    () => mergeAndEmit()
+  );
+
+  const handleLocalUpdate = () => mergeAndEmit();
+  window.addEventListener('tt_hocgioi_payment_settings_updated', handleLocalUpdate);
+
+  mergeAndEmit();
+
+  return () => {
+    if (unsubSub) unsubSub();
+    if (unsubCenter) unsubCenter();
+    unsubRootCol();
+    window.removeEventListener('tt_hocgioi_payment_settings_updated', handleLocalUpdate);
+  };
+}
 
 

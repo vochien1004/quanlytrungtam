@@ -13,6 +13,7 @@ import type { EntityType } from './components/admin/EditEntityModal';
 // Tối ưu hóa khởi động: Lazy loading các view và modal nặng để tải trang tức thì
 const AdminManagementHub = lazy(() => import('./components/admin/AdminManagementHub').then(m => ({ default: m.AdminManagementHub })));
 const CenterManagementView = lazy(() => import('./components/admin/CenterManagementView').then(m => ({ default: m.CenterManagementView })));
+const PaymentSettingsView = lazy(() => import('./components/admin/PaymentSettingsView').then(m => ({ default: m.PaymentSettingsView })));
 const SuperAdminPortalView = lazy(() => import('./components/admin/SuperAdminPortalView').then(m => ({ default: m.SuperAdminPortalView })));
 const TeacherWorkstationHub = lazy(() => import('./components/teacher/TeacherWorkstationHub').then(m => ({ default: m.TeacherWorkstationHub })));
 const ParentPortalView = lazy(() => import('./components/views/ParentPortalView').then(m => ({ default: m.ParentPortalView })));
@@ -1255,6 +1256,16 @@ export default function App() {
                   studentsCount={students.length}
                   openRenewalListTrigger={openRenewalListTrigger}
                   onDeleteCenterSuccess={handleDeleteCenterSuccess}
+                  onShowToast={showToast}
+                />
+              )}
+
+              {/* PAYMENT SETTINGS VIEW (THIẾT LẬP THANH TOÁN CHO CENTER ADMIN) */}
+              {activeNav === 'admin-payment-settings' && (
+                <PaymentSettingsView
+                  centers={centers}
+                  activeCenterId={activeCenterId}
+                  currentUser={currentUser}
                   onShowToast={showToast}
                 />
               )}

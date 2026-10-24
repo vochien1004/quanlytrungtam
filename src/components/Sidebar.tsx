@@ -21,7 +21,8 @@ import {
   X,
   CalendarCheck,
   Award,
-  MessageSquare
+  MessageSquare,
+  CreditCard
 } from 'lucide-react';
 import { BrandLogo } from './BrandLogo';
 import { UserRole } from './Header';
@@ -32,6 +33,7 @@ export type NavItemKey =
   | 'dashboard' 
   | 'super-admin-portal'
   | 'admin-centers'
+  | 'admin-payment-settings'
   | 'admin-classes' 
   | 'admin-teachers' 
   | 'admin-students'
@@ -422,6 +424,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <Building2 className="w-4 h-4 text-[#0072B5] shrink-0" />
                   <span>Thông tin Trường của bạn</span>
+                </button>
+
+                {/* Menu: Thiết lập thanh toán */}
+                <button
+                  type="button"
+                  onClick={() => handleItemClick('admin-payment-settings')}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                    activeNav === 'admin-payment-settings'
+                      ? 'bg-blue-50 text-[#0072B5] font-bold shadow-2xs'
+                      : 'text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <CreditCard className="w-4 h-4 text-[#0072B5] shrink-0" />
+                  <span>Thiết lập thanh toán</span>
                 </button>
               </div>
             </div>

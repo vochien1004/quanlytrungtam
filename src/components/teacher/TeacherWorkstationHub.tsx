@@ -339,17 +339,36 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
   // =========================================================================
   const [attendanceViewMode, setAttendanceViewMode] = useState<'daily' | 'monthly'>('daily');
 
-  // Đơn giá mỗi buổi học (VNĐ) để tính cột Tổng tiền tự động (mặc định 40,000 đ như ảnh mẫu của người dùng)
-  const [pricePerSession, setPricePerSession] = useState<number>(40000);
+  // Đơn giá mỗi buổi học (VNĐ) để tính cột Tổng tiền tự động (đồng bộ từ lớp học hoặc mặc định 40,000 đ)
+  const [pricePerSession, setPricePerSession] = useState<number>(
+    currentClass?.pricePerSession !== undefined ? Number(currentClass.pricePerSession) : 40000
+  );
+
+  useEffect(() => {
+    if (currentClass?.pricePerSession !== undefined && !isNaN(Number(currentClass.pricePerSession))) {
+      setPricePerSession(Number(currentClass.pricePerSession));
+    }
+  }, [currentClass?.id, currentClass?.pricePerSession]);
 
   // Tất cả bản ghi điểm danh thực tế từ Firebase thuộc lớp học và tháng được chọn
   const monthlyRecords = useMemo(() => {
+    const cId = String(selectedClassId || currentClass?.id || '').trim();
+    const cCode = String(currentClass?.classCode || '').trim().toLowerCase();
+    const cName = String(currentClass?.name || '').trim().toLowerCase();
+
     return (effectiveAttendanceRecords || []).filter((att) => {
-      if (!att || att.classId !== selectedClassId) return false;
-      const dateStr = att.date || '';
+      if (!att) return false;
+      const attCId = String(att.classId || '').trim();
+      const attCName = String(att.className || '').trim().toLowerCase();
+      const isMatchClass =
+        (cId && attCId === cId) ||
+        (cCode && attCId.toLowerCase() === cCode) ||
+        (cName && attCName === cName);
+      if (!isMatchClass) return false;
+      const dateStr = att.date || att.sessionDate || '';
       return att.sessionMonth === selectedMonth || dateStr.startsWith(selectedMonth);
     });
-  }, [effectiveAttendanceRecords, selectedClassId, selectedMonth]);
+  }, [effectiveAttendanceRecords, selectedClassId, currentClass, selectedMonth]);
 
   // Danh sách các ngày trong tháng (1 đến 28/29/30/31)
   const daysInMonthList = useMemo(() => {
@@ -374,14 +393,21 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
       const dayCells = dayCols.map((d) => {
         const dStr = d.toString().padStart(2, '0');
         const iso = `${selectedMonth}-${dStr}`;
-        const rec = monthlyRecords.find((r) => r.date === iso);
-        const sRec = rec?.records?.find((r: any) => r.studentId === st.id);
-        if (sRec?.status === 'present') {
+        const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
+        const sRec =
+          rec?.records?.find(
+            (r: any) =>
+              (r.studentId && String(r.studentId).trim() === String(st.id).trim()) ||
+              (r.id && String(r.id).trim() === String(st.id).trim()) ||
+              (r.studentName && st.name && String(r.studentName).trim().toLowerCase() === String(st.name).trim().toLowerCase())
+          ) || (rec?.studentId === st.id ? rec : null);
+        const stStatus = String(sRec?.status || '').toLowerCase();
+        if (stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt')) {
           attended++;
           return 'X';
         }
-        if (sRec?.status === 'excused') return 'P';
-        if (sRec?.status === 'unexcused') return 'K';
+        if (stStatus === 'excused' || stStatus.includes('phép')) return 'P';
+        if (stStatus === 'unexcused' || stStatus === 'absent' || stStatus.includes('không phép')) return 'K';
         return '';
       });
       if (showFinancials) {
@@ -1961,24 +1987,31 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                             {daysInMonthList.map((d) => {
                               const dStr = d.toString().padStart(2, '0');
                               const iso = `${selectedMonth}-${dStr}`;
-                              const rec = monthlyRecords.find((r) => r.date === iso);
-                              const sRec = rec?.records?.find((r: any) => r.studentId === st.id);
+                              const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
+                              const sRec =
+                                rec?.records?.find(
+                                  (r: any) =>
+                                    (r.studentId && String(r.studentId).trim() === String(st.id).trim()) ||
+                                    (r.id && String(r.id).trim() === String(st.id).trim()) ||
+                                    (r.studentName && st.name && String(r.studentName).trim().toLowerCase() === String(st.name).trim().toLowerCase())
+                                ) || (rec?.studentId === st.id ? rec : null);
 
                               let marker = '';
                               let markerClass = '';
                               let titleText = `Ngày ${dStr}: Chưa có dữ liệu`;
 
                               if (sRec) {
-                                if (sRec.status === 'present') {
+                                const stStatus = String(sRec.status || '').toLowerCase();
+                                if (stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt')) {
                                   attendedCount++;
                                   marker = 'X';
                                   markerClass = 'font-black text-[#0B486B] text-xs';
                                   titleText = `Ngày ${dStr}: Có mặt`;
-                                } else if (sRec.status === 'excused') {
+                                } else if (stStatus === 'excused' || stStatus.includes('phép')) {
                                   marker = 'P';
                                   markerClass = 'font-bold text-[#F39C12] text-[11px]';
                                   titleText = `Ngày ${dStr}: Vắng có phép`;
-                                } else if (sRec.status === 'unexcused') {
+                                } else if (stStatus === 'unexcused' || stStatus === 'absent' || stStatus.includes('không phép')) {
                                   marker = 'K';
                                   markerClass = 'font-bold text-[#E74C3C] text-[11px]';
                                   titleText = `Ngày ${dStr}: Vắng không phép`;
@@ -2029,8 +2062,11 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                         {daysInMonthList.map((d) => {
                           const dStr = d.toString().padStart(2, '0');
                           const iso = `${selectedMonth}-${dStr}`;
-                          const rec = monthlyRecords.find((r) => r.date === iso);
-                          const presentCountForDay = (rec?.records || []).filter((r: any) => r.status === 'present').length;
+                          const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
+                          const presentCountForDay = (rec?.records || []).filter((r: any) => {
+                            const stStatus = String(r.status || '').toLowerCase();
+                            return stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt');
+                          }).length;
                           return (
                             <td key={d} className="py-2 px-1 text-center text-[11px] font-black text-[#0B486B]">
                               {presentCountForDay > 0 ? presentCountForDay : '—'}
@@ -2043,9 +2079,16 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                             const count = daysInMonthList.reduce((sAcc, d) => {
                               const dStr = d.toString().padStart(2, '0');
                               const iso = `${selectedMonth}-${dStr}`;
-                              const rec = monthlyRecords.find((r) => r.date === iso);
-                              const sRec = rec?.records?.find((r: any) => r.studentId === st.id);
-                              return sRec?.status === 'present' ? sAcc + 1 : sAcc;
+                              const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
+                              const sRec =
+                                rec?.records?.find(
+                                  (r: any) =>
+                                    (r.studentId && String(r.studentId).trim() === String(st.id).trim()) ||
+                                    (r.id && String(r.id).trim() === String(st.id).trim()) ||
+                                    (r.studentName && st.name && String(r.studentName).trim().toLowerCase() === String(st.name).trim().toLowerCase())
+                                ) || (rec?.studentId === st.id ? rec : null);
+                              const stStatus = String(sRec?.status || '').toLowerCase();
+                              return stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt') ? sAcc + 1 : sAcc;
                             }, 0);
                             return acc + count;
                           }, 0)}
@@ -2058,9 +2101,16 @@ export const TeacherWorkstationHub: React.FC<TeacherWorkstationHubProps> = ({
                                 const count = daysInMonthList.reduce((sAcc, d) => {
                                   const dStr = d.toString().padStart(2, '0');
                                   const iso = `${selectedMonth}-${dStr}`;
-                                  const rec = monthlyRecords.find((r) => r.date === iso);
-                                  const sRec = rec?.records?.find((r: any) => r.studentId === st.id);
-                                  return sRec?.status === 'present' ? sAcc + 1 : sAcc;
+                                  const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
+                                  const sRec =
+                                    rec?.records?.find(
+                                      (r: any) =>
+                                        (r.studentId && String(r.studentId).trim() === String(st.id).trim()) ||
+                                        (r.id && String(r.id).trim() === String(st.id).trim()) ||
+                                        (r.studentName && st.name && String(r.studentName).trim().toLowerCase() === String(st.name).trim().toLowerCase())
+                                    ) || (rec?.studentId === st.id ? rec : null);
+                                  const stStatus = String(sRec?.status || '').toLowerCase();
+                                  return stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt') ? sAcc + 1 : sAcc;
                                 }, 0);
                                 return acc + count * pricePerSession;
                               }, 0)

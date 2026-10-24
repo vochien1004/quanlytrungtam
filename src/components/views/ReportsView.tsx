@@ -19,11 +19,24 @@ import {
   DollarSign,
   BookOpen,
   CalendarDays,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Lock,
+  Unlock,
+  Send
 } from 'lucide-react';
 import { ClassItem, TeacherItem, StudentItem } from '../../data/mockData';
 import { UserAccount } from '../../services/authService';
-import { getRealtimeAttendance, isTeacherRole, updateClass } from '../../services/firebaseService';
+import {
+  getRealtimeAttendance,
+  isTeacherRole,
+  updateClass,
+  MonthlyTuitionLockItem,
+  StudentTuitionSnapshot,
+  calculateStudentMonthlyAttendedSessions,
+  finalizeMonthlyTuition,
+  unfinalizeMonthlyTuition,
+  getRealtimeMonthlyTuitionLocks,
+} from '../../services/firebaseService';
 import { AccountAvatar } from '../common/AccountAvatar';
 import { ExportMonthlyExcelModal } from './ExportMonthlyExcelModal';
 import { exportSingleClassAttendanceWorkbook } from '../../services/excelExportService';
@@ -90,31 +103,44 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   // Đơn giá mỗi buổi học theo từng lớp (đồng bộ từ thông tin lớp học và Firebase, mặc định 40,000 đ)
   const [pricesMap, setPricesMap] = useState<Record<string, number>>({});
 
+  // Trạng thái chốt sổ học phí tháng (đồng bộ với tài khoản phụ huynh)
+  const [tuitionLocks, setTuitionLocks] = useState<MonthlyTuitionLockItem[]>([]);
+  const [lockingClassId, setLockingClassId] = useState<string | null>(null);
+  const [tuitionToast, setTuitionToast] = useState<{ show: boolean; message: string; type: 'success' | 'info' }>({
+    show: false,
+    message: '',
+    type: 'success',
+  });
+
+  const showTuitionNotice = (message: string, type: 'success' | 'info' = 'success') => {
+    setTuitionToast({ show: true, message, type });
+    setTimeout(() => {
+      setTuitionToast((prev) => ({ ...prev, show: false }));
+    }, 4000);
+  };
+
+  useEffect(() => {
+    const unsub = getRealtimeMonthlyTuitionLocks(effectiveCenterId, (locks) => {
+      setTuitionLocks(locks);
+    });
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [effectiveCenterId]);
+
   const getPriceForClass = (classId: string) => {
     if (pricesMap[classId] !== undefined) return pricesMap[classId];
     const targetClass = (classes || []).find((c) => c.id === classId);
     if (targetClass?.pricePerSession !== undefined && !isNaN(Number(targetClass.pricePerSession))) {
       return Number(targetClass.pricePerSession);
     }
-    return 40000;
-  };
-
-  const setPriceForClass = async (classId: string, val: number) => {
-    const safeVal = Math.max(0, val);
-    setPricesMap((prev) => ({
-      ...prev,
-      [classId]: safeVal,
-    }));
-    // Đồng bộ tức thời lên Firebase Firestore & danh sách lớp học
-    try {
-      if (onUpdateClassPrice) {
-        await onUpdateClassPrice(classId, safeVal);
-      } else if (effectiveCenterId) {
-        await updateClass(effectiveCenterId, classId, { pricePerSession: safeVal });
-      }
-    } catch (err) {
-      console.warn('Lỗi khi đồng bộ đơn giá lên Firebase:', err);
+    const existingLock = tuitionLocks.find(
+      (l) => l.month === selectedMonth && (l.classId === classId || l.classId === 'ALL')
+    );
+    if (existingLock?.pricePerSession !== undefined && !isNaN(Number(existingLock.pricePerSession))) {
+      return Number(existingLock.pricePerSession);
     }
+    return 40000;
   };
 
   // 3. Listener Realtime kết nối sub-collection `/centers/{centerId}/attendance`
@@ -267,6 +293,209 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     });
   };
 
+  // Kiểm tra lớp học đã được center_admin chốt sổ trong tháng đang chọn hay chưa
+  const isClassMonthFinalized = (classId: string): boolean => {
+    const classLock = tuitionLocks.find(
+      (l) => l.month === selectedMonth && l.classId === classId
+    );
+    if (classLock !== undefined) return Boolean(classLock.isFinalized);
+    const allLock = tuitionLocks.find(
+      (l) => l.month === selectedMonth && l.classId === 'ALL'
+    );
+    return Boolean(allLock?.isFinalized);
+  };
+
+  const getClassLockDetails = (classId: string): MonthlyTuitionLockItem | undefined => {
+    return (
+      tuitionLocks.find((l) => l.month === selectedMonth && l.classId === classId) ||
+      tuitionLocks.find((l) => l.month === selectedMonth && l.classId === 'ALL')
+    );
+  };
+
+  // Tạo danh sách dữ liệu học phí của học sinh trong lớp đồng bộ 100% với bảng điểm danh của giáo viên
+  const buildClassStudentTuitionSnapshots = (
+    cls: ClassItem,
+    overridePrice?: number
+  ): StudentTuitionSnapshot[] => {
+    const classStudents = getStudentsForClass(cls);
+    const price = overridePrice !== undefined ? overridePrice : getPriceForClass(cls.id);
+    return classStudents.map((st) => {
+      const attendedSessions = calculateStudentMonthlyAttendedSessions({
+        month: selectedMonth,
+        student: st,
+        attendanceRecords: effectiveAttendanceRecords,
+        classInfo: cls,
+      });
+      return {
+        studentId: st.id,
+        studentCode: st.studentCode || st.id,
+        studentName: st.name,
+        parentPhone: st.parentPhone || '',
+        classId: cls.id,
+        className: cls.name,
+        month: selectedMonth,
+        attendedSessions,
+        pricePerSession: price,
+        totalTuition: attendedSessions * price,
+      };
+    });
+  };
+
+  // Chốt sổ học phí tháng cho 1 lớp cụ thể và truyền đến tài khoản Phụ huynh
+  const handleFinalizeClassTuition = async (cls: ClassItem, overridePrice?: number, silent?: boolean) => {
+    if (!effectiveCenterId) return;
+    setLockingClassId(cls.id);
+    try {
+      const price = overridePrice !== undefined ? overridePrice : getPriceForClass(cls.id);
+      const snapshots = buildClassStudentTuitionSnapshots(cls, price);
+      await finalizeMonthlyTuition({
+        centerId: effectiveCenterId,
+        month: selectedMonth,
+        classId: cls.id,
+        className: cls.name,
+        pricePerSession: price,
+        studentsList: snapshots,
+        finalizedBy: currentUser?.fullName || currentUser?.name || 'Quản trị trung tâm',
+      });
+      if (!silent) {
+        const [y, m] = selectedMonth.split('-');
+        showTuitionNotice(
+          `✓ Đã chốt sổ & truyền học phí Tháng ${m}/${y} của lớp "${cls.name}" (${snapshots.length} học sinh) đến tài khoản Phụ huynh!`,
+          'success'
+        );
+      }
+    } catch (err) {
+      console.warn('Lỗi chốt sổ học phí lớp:', err);
+    } finally {
+      setLockingClassId(null);
+    }
+  };
+
+  // Mở khóa / Bỏ chốt sổ học phí tháng của 1 lớp
+  const handleUnfinalizeClassTuition = async (cls: ClassItem) => {
+    if (!effectiveCenterId) return;
+    setLockingClassId(cls.id);
+    try {
+      await unfinalizeMonthlyTuition({
+        centerId: effectiveCenterId,
+        month: selectedMonth,
+        classId: cls.id,
+      });
+      await unfinalizeMonthlyTuition({
+        centerId: effectiveCenterId,
+        month: selectedMonth,
+        classId: 'ALL',
+      });
+      const [y, m] = selectedMonth.split('-');
+      showTuitionNotice(
+        `Đã mở khóa sổ học phí Tháng ${m}/${y} của lớp "${cls.name}". Phụ huynh sẽ thấy trạng thái đang cập nhật.`,
+        'info'
+      );
+    } catch (err) {
+      console.warn('Lỗi mở khóa sổ học phí lớp:', err);
+    } finally {
+      setLockingClassId(null);
+    }
+  };
+
+  // Chốt sổ học phí tháng cho TẤT CẢ các lớp đang hiển thị
+  const handleFinalizeAllDisplayedClasses = async () => {
+    if (!effectiveCenterId || displayedClasses.length === 0) return;
+    setLockingClassId('ALL');
+    try {
+      const allSnapshots: StudentTuitionSnapshot[] = [];
+      for (const cls of displayedClasses) {
+        const price = getPriceForClass(cls.id);
+        const snapshots = buildClassStudentTuitionSnapshots(cls, price);
+        allSnapshots.push(...snapshots);
+        await finalizeMonthlyTuition({
+          centerId: effectiveCenterId,
+          month: selectedMonth,
+          classId: cls.id,
+          className: cls.name,
+          pricePerSession: price,
+          studentsList: snapshots,
+          finalizedBy: currentUser?.fullName || currentUser?.name || 'Quản trị trung tâm',
+        });
+      }
+      if (selectedClassId === 'all') {
+        await finalizeMonthlyTuition({
+          centerId: effectiveCenterId,
+          month: selectedMonth,
+          classId: 'ALL',
+          className: 'Toàn trung tâm',
+          pricePerSession: 40000,
+          studentsList: allSnapshots,
+          finalizedBy: currentUser?.fullName || currentUser?.name || 'Quản trị trung tâm',
+        });
+      }
+      const [y, m] = selectedMonth.split('-');
+      showTuitionNotice(
+        `✓ Đã chốt sổ & truyền dữ liệu học phí Tháng ${m}/${y} (${displayedClasses.length} lớp) đến toàn bộ tài khoản Phụ huynh!`,
+        'success'
+      );
+    } catch (err) {
+      console.warn('Lỗi chốt sổ toàn bộ lớp:', err);
+    } finally {
+      setLockingClassId(null);
+    }
+  };
+
+  // Mở khóa toàn bộ các lớp đang hiển thị trong tháng
+  const handleUnfinalizeAllDisplayedClasses = async () => {
+    if (!effectiveCenterId) return;
+    setLockingClassId('ALL');
+    try {
+      for (const cls of displayedClasses) {
+        await unfinalizeMonthlyTuition({
+          centerId: effectiveCenterId,
+          month: selectedMonth,
+          classId: cls.id,
+        });
+      }
+      await unfinalizeMonthlyTuition({
+        centerId: effectiveCenterId,
+        month: selectedMonth,
+        classId: 'ALL',
+      });
+      const [y, m] = selectedMonth.split('-');
+      showTuitionNotice(
+        `Đã bỏ chốt sổ học phí Tháng ${m}/${y}. Phụ huynh sẽ thấy thông báo dữ liệu đang được cập nhật.`,
+        'info'
+      );
+    } catch (err) {
+      console.warn('Lỗi bỏ chốt sổ toàn bộ lớp:', err);
+    } finally {
+      setLockingClassId(null);
+    }
+  };
+
+  const setPriceForClass = async (classId: string, val: number) => {
+    const safeVal = Math.max(0, val);
+    setPricesMap((prev) => ({
+      ...prev,
+      [classId]: safeVal,
+    }));
+    // Đồng bộ tức thời lên Firebase Firestore & danh sách lớp học
+    try {
+      if (onUpdateClassPrice) {
+        await onUpdateClassPrice(classId, safeVal);
+      } else if (effectiveCenterId) {
+        await updateClass(effectiveCenterId, classId, { pricePerSession: safeVal });
+      }
+      // Nếu lớp đang ở trạng thái Đã chốt sổ, tự động cập nhật lại học phí đã chốt cho phụ huynh
+      const targetCls = centerClasses.find((c) => c.id === classId);
+      if (targetCls && isClassMonthFinalized(classId)) {
+        await handleFinalizeClassTuition(targetCls, safeVal, true);
+      }
+    } catch (err) {
+      console.warn('Lỗi khi đồng bộ đơn giá lên Firebase:', err);
+    }
+  };
+
+  const areAllDisplayedClassesFinalized =
+    displayedClasses.length > 0 && displayedClasses.every((cls) => isClassMonthFinalized(cls.id));
+
   // Xuất file Excel (.xlsx chuẩn SheetJS) cho bảng điểm danh tháng của 1 lớp
   const handleExportClassExcel = async (cls: ClassItem) => {
     try {
@@ -310,13 +539,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         const dStr = d.toString().padStart(2, '0');
         const iso = `${selectedMonth}-${dStr}`;
         const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
-        const sRec = rec?.records?.find((r: any) => r.studentId === st.id || r.id === st.id);
-        if (sRec?.status === 'present') {
+        const sRec =
+          rec?.records?.find(
+            (r: any) =>
+              (r.studentId && String(r.studentId).trim() === String(st.id).trim()) ||
+              (r.id && String(r.id).trim() === String(st.id).trim()) ||
+              (r.studentName && st.name && String(r.studentName).trim().toLowerCase() === String(st.name).trim().toLowerCase())
+          ) || (rec?.studentId === st.id ? rec : null);
+        const statusStr = String(sRec?.status || '').toLowerCase();
+        if (statusStr === 'present' || statusStr === 'late' || statusStr.includes('có mặt')) {
           attended++;
           return 'X';
         }
-        if (sRec?.status === 'excused') return 'P';
-        if (sRec?.status === 'unexcused') return 'K';
+        if (statusStr === 'excused' || statusStr.includes('phép')) return 'P';
+        if (statusStr === 'unexcused' || statusStr === 'absent' || statusStr.includes('không phép')) return 'K';
         return '';
       });
       if (showFinancials) {
@@ -353,15 +589,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       totalRecordedSessions += monthlyRecords.length;
 
       classStudents.forEach((st) => {
-        let attended = 0;
-        daysInMonthList.forEach((d) => {
-          const dStr = d.toString().padStart(2, '0');
-          const iso = `${selectedMonth}-${dStr}`;
-          const rec = monthlyRecords.find((r) => (r.date || r.sessionDate) === iso);
-          const sRec = rec?.records?.find((r: any) => r.studentId === st.id || r.id === st.id);
-          if (sRec?.status === 'present') {
-            attended++;
-          }
+        const attended = calculateStudentMonthlyAttendedSessions({
+          month: selectedMonth,
+          student: st,
+          attendanceRecords: monthlyRecords,
+          classInfo: cls,
         });
         totalPresentInMonth += attended;
         totalEstimatedFee += attended * price;
@@ -375,10 +607,39 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       totalPresentInMonth,
       totalEstimatedFee,
     };
-  }, [centerClasses, students, daysInMonthList, selectedMonth, effectiveAttendanceRecords, pricesMap]);
+  }, [centerClasses, students, daysInMonthList, selectedMonth, effectiveAttendanceRecords, pricesMap, tuitionLocks]);
 
   return (
     <div className="space-y-6 animate-fade-in pb-12">
+      {/* THÔNG BÁO KHI CHỐT SỔ / MỞ KHÓA SỔ HỌC PHÍ THÁNG */}
+      {tuitionToast.show && (
+        <div
+          className={`rounded-2xl p-4 text-xs font-bold flex items-center justify-between shadow-lg animate-fade-in border-2 ${
+            tuitionToast.type === 'success'
+              ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
+              : 'bg-blue-50 border-blue-300 text-[#0B486B]'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className={`flex h-8 w-8 items-center justify-center rounded-xl text-white shadow-xs shrink-0 ${
+                tuitionToast.type === 'success' ? 'bg-[#00A86B]' : 'bg-[#0072B5]'
+              }`}
+            >
+              <CheckCircle2 className="w-5 h-5" />
+            </span>
+            <span>{tuitionToast.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTuitionToast((prev) => ({ ...prev, show: false }))}
+            className="px-2 py-1 rounded-lg hover:bg-black/5 font-black cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* HEADER BÁO CÁO THỐNG KÊ */}
       <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-xs flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
         <div>
@@ -403,6 +664,45 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
             <span>Đồng bộ Firestore: Hoạt động</span>
           </div>
+
+          {/* NÚT CHỐT SỔ HỌC PHÍ THÁNG TRUYỀN ĐẾN PHỤ HUYNH (DÀNH CHO CENTER ADMIN) */}
+          {showFinancials && displayedClasses.length > 0 && (
+            areAllDisplayedClassesFinalized ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={lockingClassId !== null}
+                  onClick={handleFinalizeAllDisplayedClasses}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-2xl text-xs font-black bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+                  title="Cập nhật và gửi lại dữ liệu học phí mới nhất của tháng này sang tài khoản Phụ huynh"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${lockingClassId === 'ALL' ? 'animate-spin' : ''}`} />
+                  <span>Đã chốt sổ Tháng {selectedMonth.split('-')[1]}/{selectedMonth.split('-')[0]} (Đồng bộ lại)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={lockingClassId !== null}
+                  onClick={handleUnfinalizeAllDisplayedClasses}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 shadow-2xs transition-all cursor-pointer"
+                  title="Bỏ chốt sổ để tạm ẩn dữ liệu học phí bên tài khoản Phụ huynh"
+                >
+                  <Unlock className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Bỏ chốt sổ</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={lockingClassId !== null}
+                onClick={handleFinalizeAllDisplayedClasses}
+                className="flex items-center gap-2 px-4 py-2 rounded-2xl text-xs font-black bg-[#00A86B] hover:bg-emerald-700 text-white shadow-sm hover:shadow-md transition-all cursor-pointer ring-2 ring-emerald-400/30 active:scale-95 disabled:opacity-50"
+                title="Chốt sổ học phí tháng này và truyền thông tin (Tên học sinh, Số buổi học, Học phí) sang menu Điểm danh của tài khoản Phụ huynh"
+              >
+                <Send className="w-4 h-4 text-white shrink-0" />
+                <span>Chốt sổ &amp; Truyền học phí Tháng {selectedMonth.split('-')[1]}/{selectedMonth.split('-')[0]} cho PH</span>
+              </button>
+            )
+          )}
 
           {/* NÚT XUẤT FILE EXCEL TỔNG HỢP: Toàn bộ bảng điểm danh của tất cả các lớp trên 1 file (chọn tháng để xuất), mỗi lớp trên 1 sheet */}
           <button
@@ -644,6 +944,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             const monthlyRecords = getMonthlyRecordsForClass(cls);
             const pricePerSession = getPriceForClass(cls.id);
             const [yearStr, monthStr] = selectedMonth.split('-');
+            const isClassFinalized = isClassMonthFinalized(cls.id);
+            const lockDetails = getClassLockDetails(cls.id);
 
             return (
               <div
@@ -653,11 +955,24 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 {/* 1. Header Bảng: Đúng định dạng như ảnh mẫu */}
                 <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200/80">
                   <div className="space-y-1">
-                    <div className="text-base md:text-lg font-black text-[#0B486B] uppercase tracking-wide flex items-center gap-2.5">
+                    <div className="text-base md:text-lg font-black text-[#0B486B] uppercase tracking-wide flex flex-wrap items-center gap-2.5">
                       <Table className="w-5 h-5 text-[#0072B5] shrink-0" />
                       <span>
                         {showFinancials ? 'BẢNG ĐIỂM DANH VÀ HỌC PHÍ' : 'BẢNG ĐIỂM DANH'} THÁNG {monthStr}/{yearStr}
                       </span>
+                      {showFinancials && (
+                        isClassFinalized ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 normal-case">
+                            <Lock className="w-3 h-3 text-[#00A86B]" />
+                            Đã chốt sổ &amp; gửi PH{lockDetails?.finalizedAtStr ? ` (${lockDetails.finalizedAtStr})` : ''}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300 normal-case">
+                            <AlertCircle className="w-3 h-3 text-amber-600" />
+                            Chưa chốt sổ học phí
+                          </span>
+                        )
+                      )}
                     </div>
 
                     {/* Dòng thông tin Lớp, Phòng, Sĩ số, Đã lưu điểm danh trên Firebase */}
@@ -702,7 +1017,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Cụm công cụ: Đơn giá/buổi + Nút Xuất File Excel + In Bảng */}
+                  {/* Cụm công cụ: Đơn giá/buổi + Chốt sổ gửi PH + Nút Xuất File Excel + In Bảng */}
                   <div className="flex flex-wrap items-center gap-2.5">
                     {/* Cài đặt Đơn giá / buổi học để tính cột Tổng tiền - ẨN ĐỐI VỚI GIÁO VIÊN, CHỈ HIỂN THỊ VỚI CENTER_ADMIN */}
                     {showFinancials && (
@@ -723,6 +1038,45 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                         />
                         <span className="text-[11px] text-slate-500 font-semibold">đ</span>
                       </div>
+                    )}
+
+                    {/* Nút Chốt sổ học phí lớp gửi Phụ huynh */}
+                    {showFinancials && (
+                      isClassFinalized ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={lockingClassId === cls.id}
+                            onClick={() => handleFinalizeClassTuition(cls)}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-black bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+                            title="Cập nhật lại dữ liệu học phí mới nhất của lớp sang tài khoản Phụ huynh"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${lockingClassId === cls.id ? 'animate-spin' : ''}`} />
+                            <span>Đồng bộ lại PH</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={lockingClassId === cls.id}
+                            onClick={() => handleUnfinalizeClassTuition(cls)}
+                            className="flex items-center gap-1 px-2.5 py-2 rounded-2xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 shadow-2xs transition-all cursor-pointer"
+                            title="Mở khóa sổ học phí lớp này"
+                          >
+                            <Unlock className="w-3.5 h-3.5 text-amber-600" />
+                            <span>Mở khóa</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={lockingClassId === cls.id}
+                          onClick={() => handleFinalizeClassTuition(cls)}
+                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-2xl text-xs font-black bg-[#00A86B] hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+                          title="Chốt sổ học phí lớp này và hiển thị bên tài khoản Phụ huynh"
+                        >
+                          <Send className="w-3.5 h-3.5 text-white" />
+                          <span>Chốt sổ &amp; Gửi PH</span>
+                        </button>
+                      )
                     )}
 
                     {/* Nút Xuất File Excel (.xlsx) */}
@@ -853,25 +1207,30 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                                 const rec = monthlyRecords.find(
                                   (r) => (r.date || r.sessionDate) === iso
                                 );
-                                const sRec = rec?.records?.find(
-                                  (r: any) => r.studentId === st.id || r.id === st.id
-                                );
+                                const sRec =
+                                  rec?.records?.find(
+                                    (r: any) =>
+                                      (r.studentId && String(r.studentId).trim() === String(st.id).trim()) ||
+                                      (r.id && String(r.id).trim() === String(st.id).trim()) ||
+                                      (r.studentName && st.name && String(r.studentName).trim().toLowerCase() === String(st.name).trim().toLowerCase())
+                                  ) || (rec?.studentId === st.id ? rec : null);
 
                                 let marker = '';
                                 let markerClass = '';
                                 let titleText = `Ngày ${dStr}: Chưa có dữ liệu`;
 
                                 if (sRec) {
-                                  if (sRec.status === 'present') {
+                                  const stStatus = String(sRec.status || '').toLowerCase();
+                                  if (stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt')) {
                                     attendedCount++;
                                     marker = 'X';
                                     markerClass = 'font-black text-[#0B486B] text-xs';
                                     titleText = `Ngày ${dStr}: Có mặt (tính tiền)`;
-                                  } else if (sRec.status === 'excused') {
+                                  } else if (stStatus === 'excused' || stStatus.includes('phép')) {
                                     marker = 'P';
                                     markerClass = 'font-bold text-[#F39C12] text-[11px]';
                                     titleText = `Ngày ${dStr}: Vắng có phép`;
-                                  } else if (sRec.status === 'unexcused') {
+                                  } else if (stStatus === 'unexcused' || stStatus === 'absent' || stStatus.includes('không phép')) {
                                     marker = 'K';
                                     markerClass = 'font-bold text-[#E74C3C] text-[11px]';
                                     titleText = `Ngày ${dStr}: Vắng không phép`;
@@ -930,7 +1289,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                               (r) => (r.date || r.sessionDate) === iso
                             );
                             const presentCountForDay = (rec?.records || []).filter(
-                              (r: any) => r.status === 'present'
+                              (r: any) => {
+                                const stStatus = String(r.status || '').toLowerCase();
+                                return stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt');
+                              }
                             ).length;
                             return (
                               <td
@@ -944,19 +1306,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                           {/* Tổng số lượt có mặt cả lớp */}
                           <td className="py-2.5 px-2 text-center font-black text-[#0072B5] bg-blue-100/50">
                             {classStudents.reduce((acc, st) => {
-                              let attended = 0;
-                              daysInMonthList.forEach((d) => {
-                                const dStr = d.toString().padStart(2, '0');
-                                const iso = `${selectedMonth}-${dStr}`;
-                                const rec = monthlyRecords.find(
-                                  (r) => (r.date || r.sessionDate) === iso
-                                );
-                                const sRec = rec?.records?.find(
-                                  (r: any) => r.studentId === st.id || r.id === st.id
-                                );
-                                if (sRec?.status === 'present') attended++;
-                              });
-                              return acc + attended;
+                              return (
+                                acc +
+                                calculateStudentMonthlyAttendedSessions({
+                                  month: selectedMonth,
+                                  student: st,
+                                  attendanceRecords: monthlyRecords,
+                                  classInfo: cls,
+                                })
+                              );
                             }, 0)}
                           </td>
                           {/* Tổng tiền học phí cả lớp trong tháng - Ẩn đối với giáo viên, chỉ hiển thị đối với center_admin */}
@@ -964,17 +1322,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                             <td className="py-2.5 px-3 text-right font-black text-emerald-900 bg-emerald-100/60 text-xs">
                               {classStudents
                                 .reduce((acc, st) => {
-                                  let attended = 0;
-                                  daysInMonthList.forEach((d) => {
-                                    const dStr = d.toString().padStart(2, '0');
-                                    const iso = `${selectedMonth}-${dStr}`;
-                                    const rec = monthlyRecords.find(
-                                      (r) => (r.date || r.sessionDate) === iso
-                                    );
-                                    const sRec = rec?.records?.find(
-                                      (r: any) => r.studentId === st.id || r.id === st.id
-                                    );
-                                    if (sRec?.status === 'present') attended++;
+                                  const attended = calculateStudentMonthlyAttendedSessions({
+                                    month: selectedMonth,
+                                    student: st,
+                                    attendanceRecords: monthlyRecords,
+                                    classInfo: cls,
                                   });
                                   return acc + attended * pricePerSession;
                                 }, 0)
