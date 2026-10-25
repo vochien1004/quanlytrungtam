@@ -72,6 +72,52 @@ async function startServer() {
     }
   });
 
+  // Proxy endpoint to check real-time PayOS payment status directly via paymentLinkId
+  // Bypasses browser CORS and Firestore root collection rules so the modal & student status update immediately upon payment
+  const handlePayOSCheckStatus = async (req: express.Request, res: express.Response) => {
+    try {
+      let paymentLinkId = String(
+        req.body?.paymentLinkId || req.params?.paymentLinkId || req.query?.paymentLinkId || ''
+      ).trim();
+      const checkoutUrl = String(req.body?.checkoutUrl || req.query?.checkoutUrl || '').trim();
+
+      if (!paymentLinkId && checkoutUrl) {
+        const match = checkoutUrl.match(/\/web\/([a-zA-Z0-9]+)/i);
+        if (match && match[1]) {
+          paymentLinkId = match[1];
+        }
+      }
+
+      if (!paymentLinkId || !/^[a-zA-Z0-9_-]+$/.test(paymentLinkId)) {
+        return res.status(400).json({ code: '400', desc: 'Missing or invalid paymentLinkId' });
+      }
+
+      const payosRes = await fetch(
+        `https://pay.payos.vn/api/web/${encodeURIComponent(paymentLinkId)}/check-status/`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+        }
+      );
+
+      const data = await payosRes.json().catch(() => ({}));
+      return res.status(200).json(data);
+    } catch (err: any) {
+      return res.status(200).json({
+        code: '99',
+        desc: err?.message || 'PayOS status check failed',
+        data: { status: 'PENDING' },
+      });
+    }
+  };
+
+  app.post('/api/payos/check-status', handlePayOSCheckStatus);
+  app.get('/api/payos/check-status/:paymentLinkId', handlePayOSCheckStatus);
+  app.get('/api/payos/check-status', handlePayOSCheckStatus);
+
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

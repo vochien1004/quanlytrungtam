@@ -59,7 +59,13 @@ import {
   calculateStudentMonthlyAttendedSessions,
   CenterPaymentSettings,
   getRealtimeCenterPaymentSettings,
+  TuitionPaymentRecord,
+  getRealtimeCenterTuitionPayments,
+  checkPayOSPaymentStatus,
+  recordStudentTuitionPaymentSuccess,
+  normalizeTuitionMonthPair,
 } from '../../services/firebaseService';
+import { TuitionPaymentModal } from './TuitionPaymentModal';
 
 interface ParentPortalViewProps {
   student?: StudentItem | null;
@@ -175,7 +181,8 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
   const [tuitionLocks, setTuitionLocks] = useState<MonthlyTuitionLockItem[]>([]);
   const [isTuitionModalOpen, setIsTuitionModalOpen] = useState<boolean>(false);
   const [centerPaymentSettings, setCenterPaymentSettings] = useState<CenterPaymentSettings | null>(null);
-  const [copiedTuitionMemo, setCopiedTuitionMemo] = useState<boolean>(false);
+  const [paidMonthsMap, setPaidMonthsMap] = useState<Record<string, boolean>>({});
+  const [centerTuitionPayments, setCenterTuitionPayments] = useState<TuitionPaymentRecord[]>([]);
 
   // Lắng nghe trạng thái Chốt sổ học phí tháng từ center_admin theo thời gian thực
   useEffect(() => {
@@ -187,6 +194,70 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       if (unsub) unsub();
     };
   }, [activeCenterId, currentStudent?.centerId]);
+
+  // Lắng nghe danh sách giao dịch học phí của trung tâm theo thời gian thực
+  useEffect(() => {
+    const effectiveCId = (activeCenterId || currentStudent?.centerId || '').trim();
+    const unsub = getRealtimeCenterTuitionPayments(effectiveCId, (payments) => {
+      setCenterTuitionPayments(payments);
+    });
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [activeCenterId, currentStudent?.centerId]);
+
+  // Tự động kiểm tra các đơn PENDING có paymentLinkId trên PayOS (trong trường hợp phụ huynh đã quét QR nhưng đóng modal hoặc tải lại trang)
+  useEffect(() => {
+    if (!currentStudent?.id || centerTuitionPayments.length === 0) return;
+    const stId = String(currentStudent.id).trim();
+    const pendingForStudent = centerTuitionPayments.filter(
+      (p) =>
+        p &&
+        p.status === 'PENDING' &&
+        String(p.studentId || '').trim() === stId &&
+        Boolean(p.paymentLinkId || p.checkoutUrl)
+    );
+    if (pendingForStudent.length === 0) return;
+
+    let cancelled = false;
+    const verifyPendingOrders = async () => {
+      for (const order of pendingForStudent) {
+        if (cancelled) return;
+        const res = await checkPayOSPaymentStatus({
+          paymentLinkId: order.paymentLinkId,
+          checkoutUrl: order.checkoutUrl,
+        });
+        if (!cancelled && res.isPaid) {
+          await recordStudentTuitionPaymentSuccess({
+            orderCode: order.orderCode,
+            paymentLinkId: order.paymentLinkId,
+            centerId: order.centerId || (activeCenterId || currentStudent.centerId || 'HG01').trim(),
+            centerName: order.centerName || centerName,
+            studentId: order.studentId,
+            studentName: order.studentName || currentStudent.name,
+            classId: order.classId || currentStudent.classId,
+            className: order.className || currentStudent.className,
+            month: order.displayMonth || order.month,
+            attendedSessions: order.attendedSessions,
+            amount: order.amount,
+            description: order.description,
+          });
+          setPaidMonthsMap((prev) => ({
+            ...prev,
+            [order.displayMonth]: true,
+            [order.isoMonth]: true,
+          }));
+        }
+      }
+    };
+
+    verifyPendingOrders();
+    const timer = setInterval(verifyPendingOrders, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [centerTuitionPayments, currentStudent?.id, activeCenterId, centerName]);
 
   // Lắng nghe thông tin Thiết lập thanh toán (BankId, Số TK, Tên chủ thẻ) từ center_admin trên Firebase
   useEffect(() => {
@@ -797,8 +868,56 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       } catch {}
     }
 
+    const { isoMonth, displayMonth } = normalizeTuitionMonthPair(selectedAttendanceMonth);
+
+    // Kiểm tra trạng thái Đã thanh toán của học sinh cho tháng đang chọn từ mọi nguồn đồng bộ
+    const matchedPaidPayment = (centerTuitionPayments || []).find(
+      (p) =>
+        p &&
+        p.status === 'PAID' &&
+        ((sId && String(p.studentId || '').trim() === sId) ||
+          (sName && String(p.studentName || '').trim().toLowerCase() === sName.toLowerCase())) &&
+        (p.isoMonth === isoMonth || p.displayMonth === displayMonth || p.month === displayMonth || p.month === isoMonth)
+    );
+
+    const studentTuitionByMonth = (currentStudent as any)?.tuitionByMonth || {};
+    const studentPaidMonths = (currentStudent as any)?.paidMonths || {};
+    const monthStatusVal = String(
+      studentTuitionByMonth[displayMonth] || studentTuitionByMonth[isoMonth] || ''
+    )
+      .toLowerCase()
+      .trim();
+    const snapshotStatusVal = String(studentSnapshot?.tuitionStatus || '')
+      .toLowerCase()
+      .trim();
+
+    const isPaid = Boolean(
+      paidMonthsMap[displayMonth] ||
+        paidMonthsMap[isoMonth] ||
+        studentPaidMonths[displayMonth] ||
+        studentPaidMonths[isoMonth] ||
+        monthStatusVal === 'đã thanh toán' ||
+        monthStatusVal === 'đã nộp' ||
+        monthStatusVal === 'paid' ||
+        studentSnapshot?.isPaid ||
+        snapshotStatusVal === 'đã thanh toán' ||
+        snapshotStatusVal === 'đã nộp' ||
+        snapshotStatusVal === 'paid' ||
+        matchedPaidPayment
+    );
+
+    const paidOrderCode =
+      matchedPaidPayment?.orderCode ||
+      studentSnapshot?.paidOrderCode ||
+      (currentStudent as any)?.lastPaidOrderCode ||
+      undefined;
+
     return {
       isFinalized,
+      isPaid,
+      paidOrderCode,
+      displayMonth,
+      isoMonth,
       lockRecord: specificLock,
       studentName: studentNameVal,
       className: classNameVal,
@@ -823,6 +942,8 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
     monthlyAttendanceRecords,
     isRecordForStudentOrClass,
     centerPaymentSettings,
+    centerTuitionPayments,
+    paidMonthsMap,
   ]);
 
   // Xuất file Excel bảng điểm danh theo tháng
@@ -1468,10 +1589,23 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                       Thanh toán học phí Tháng {selectedAttendanceMonth.split('-')[1]}/{selectedAttendanceMonth.split('-')[0]}
                     </h3>
                     {monthlyTuitionStatus.isFinalized ? (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                        Đã chốt sổ
-                      </span>
+                      <>
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                          <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                          Đã chốt sổ
+                        </span>
+                        {monthlyTuitionStatus.isPaid ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-black bg-emerald-600 text-white shadow-2xs">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-white" />
+                            Đã thanh toán
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-rose-50 text-rose-700 border border-rose-200">
+                            <Clock className="w-3.5 h-3.5 text-rose-500" />
+                            Chưa thanh toán
+                          </span>
+                        )}
+                      </>
                     ) : (
                       <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300">
                         <Clock className="w-3.5 h-3.5 text-amber-600" />
@@ -1549,15 +1683,44 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                   </div>
 
                   {/* Học phí */}
-                  <div className="rounded-2xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 p-4 flex items-center gap-3.5">
-                    <div className="w-11 h-11 rounded-xl bg-amber-500 text-white flex items-center justify-center font-black text-base shrink-0 shadow-sm">
-                      <DollarSign className="w-5 h-5" />
+                  <div
+                    className={`rounded-2xl border-2 p-4 flex items-center gap-3.5 ${
+                      monthlyTuitionStatus.isPaid
+                        ? 'border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50'
+                        : 'border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50'
+                    }`}
+                  >
+                    <div
+                      className={`w-11 h-11 rounded-xl text-white flex items-center justify-center font-black text-base shrink-0 shadow-sm ${
+                        monthlyTuitionStatus.isPaid ? 'bg-emerald-600' : 'bg-amber-500'
+                      }`}
+                    >
+                      {monthlyTuitionStatus.isPaid ? (
+                        <CheckCircle2 className="w-5 h-5" />
+                      ) : (
+                        <DollarSign className="w-5 h-5" />
+                      )}
                     </div>
                     <div>
-                      <p className="text-[11px] font-extrabold uppercase tracking-wider text-amber-900/70">
-                        Học phí
-                      </p>
-                      <p className="text-xl sm:text-2xl font-black text-rose-600 mt-0.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-600">
+                          Học phí
+                        </p>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            monthlyTuitionStatus.isPaid
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-rose-100 text-rose-700'
+                          }`}
+                        >
+                          {monthlyTuitionStatus.isPaid ? 'Đã thanh toán' : 'Chưa thanh toán'}
+                        </span>
+                      </div>
+                      <p
+                        className={`text-xl sm:text-2xl font-black mt-0.5 ${
+                          monthlyTuitionStatus.isPaid ? 'text-emerald-700' : 'text-rose-600'
+                        }`}
+                      >
                         {monthlyTuitionStatus.totalTuition.toLocaleString('vi-VN')} ₫
                       </p>
                       <p className="text-[11px] font-semibold text-slate-600">
@@ -1578,6 +1741,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                         <th className="py-3 px-4 text-center">Số buổi học</th>
                         <th className="py-3 px-4 text-right">Đơn giá / buổi</th>
                         <th className="py-3 px-4 text-right">Học phí cần thanh toán</th>
+                        <th className="py-3 px-4 text-center">Trạng thái</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 bg-white">
@@ -1599,8 +1763,25 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                         <td className="py-3.5 px-4 text-right font-bold text-slate-700">
                           {monthlyTuitionStatus.pricePerSession.toLocaleString('vi-VN')} ₫
                         </td>
-                        <td className="py-3.5 px-4 text-right font-black text-rose-600 text-sm">
+                        <td
+                          className={`py-3.5 px-4 text-right font-black text-sm ${
+                            monthlyTuitionStatus.isPaid ? 'text-emerald-700' : 'text-rose-600'
+                          }`}
+                        >
                           {monthlyTuitionStatus.totalTuition.toLocaleString('vi-VN')} ₫
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          {monthlyTuitionStatus.isPaid ? (
+                            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 font-black text-[11px]">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                              Đã thanh toán
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-300 font-bold text-[11px]">
+                              <Clock className="w-3.5 h-3.5 text-amber-600" />
+                              Chưa thanh toán
+                            </span>
+                          )}
                         </td>
                       </tr>
                     </tbody>
@@ -1621,10 +1802,22 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsTuitionModalOpen(true)}
-                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#0072B5] to-[#0B486B] hover:from-[#0B486B] hover:to-[#0072B5] text-white text-xs sm:text-sm font-black shadow-md hover:shadow-lg transition-all cursor-pointer shrink-0"
+                    className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-white text-xs sm:text-sm font-black shadow-md hover:shadow-lg transition-all cursor-pointer shrink-0 ${
+                      monthlyTuitionStatus.isPaid
+                        ? 'bg-gradient-to-r from-emerald-600 to-[#00A86B] hover:from-emerald-700 hover:to-emerald-600'
+                        : 'bg-gradient-to-r from-[#0072B5] to-[#0B486B] hover:from-[#0B486B] hover:to-[#0072B5]'
+                    }`}
                   >
-                    <QrCode className="w-4.5 h-4.5" />
-                    <span>Thanh toán học phí ({monthlyTuitionStatus.totalTuition.toLocaleString('vi-VN')} ₫)</span>
+                    {monthlyTuitionStatus.isPaid ? (
+                      <CheckCircle2 className="w-4.5 h-4.5" />
+                    ) : (
+                      <QrCode className="w-4.5 h-4.5" />
+                    )}
+                    <span>
+                      {monthlyTuitionStatus.isPaid
+                        ? `Đã thanh toán học phí (${monthlyTuitionStatus.totalTuition.toLocaleString('vi-VN')} ₫)`
+                        : `Thanh toán học phí (${monthlyTuitionStatus.totalTuition.toLocaleString('vi-VN')} ₫)`}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -1643,140 +1836,40 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
             )}
           </div>
 
-          {/* POPUP MODAL HIỂN THỊ MÃ QR VÀ THÔNG TIN THANH TOÁN HỌC PHÍ THÁNG */}
-          {isTuitionModalOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in overflow-y-auto">
-              <div className="bg-white rounded-3xl border-3 border-[#0072B5] max-w-xl w-full overflow-hidden shadow-2xl my-auto">
-                <div className="bg-gradient-to-r from-[#0B486B] to-[#0072B5] px-6 py-4 text-white flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <QrCode className="w-5 h-5" />
-                    <h4 className="font-black text-base uppercase tracking-wide">
-                      Mã QR Thanh Toán Học Phí Tháng {selectedAttendanceMonth.split('-')[1]}/{selectedAttendanceMonth.split('-')[0]}
-                    </h4>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsTuitionModalOpen(false)}
-                    className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white font-black cursor-pointer"
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                <div className="p-5 sm:p-6 space-y-4 max-h-[85vh] overflow-y-auto">
-                  {monthlyTuitionStatus.isFinalized ? (
-                    <>
-                      {/* Khung hiển thị mã QR VietQR to, rõ ràng */}
-                      {monthlyTuitionStatus.vietQrUrl ? (
-                        <div className="w-full flex flex-col items-center justify-center bg-blue-50/40 p-4 sm:p-5 rounded-2xl border-2 border-blue-100 shadow-2xs">
-                          <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
-                            <img
-                              src={monthlyTuitionStatus.vietQrUrl}
-                              alt="Mã VietQR Thanh Toán Học Phí"
-                              className="w-64 sm:w-72 h-auto max-w-full object-contain rounded-xl mx-auto"
-                            />
-                          </div>
-                          <span className="text-xs font-bold text-[#0B486B] mt-2.5 text-center">
-                            Mở ứng dụng Ngân hàng và quét mã VietQR để tự động điền số tiền &amp; nội dung thanh toán
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center text-xs text-slate-500">
-                          Trung tâm đang cập nhật thông tin tài khoản ngân hàng nhận học phí trong mục <strong>Thiết lập thanh toán</strong>.
-                        </div>
-                      )}
-
-                      {/* Thông tin tài khoản ngân hàng & học phí */}
-                      <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 space-y-2.5 text-xs">
-                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                          <span className="font-bold text-slate-500">Mã ngân hàng (BankId):</span>
-                          <span className="text-sm font-black text-[#0B486B]">
-                            {monthlyTuitionStatus.bankId || 'Chưa thiết lập'}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                          <span className="font-bold text-slate-500">Số tài khoản:</span>
-                          <span className="text-sm font-mono font-black text-[#0072B5]">
-                            {monthlyTuitionStatus.accountNo || 'Chưa thiết lập'}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                          <span className="font-bold text-slate-500">Tên chủ tài khoản:</span>
-                          <span className="text-xs font-extrabold text-slate-800 uppercase">
-                            {monthlyTuitionStatus.accountName || 'Chưa thiết lập'}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                          <span className="font-bold text-slate-500">Học sinh &amp; Lớp học:</span>
-                          <span className="text-xs font-black text-[#0B486B]">
-                            {monthlyTuitionStatus.studentName} — {monthlyTuitionStatus.className} ({monthlyTuitionStatus.attendedSessions} buổi)
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between pt-1">
-                          <span className="text-sm font-black text-[#0B486B]">Số tiền cần thanh toán:</span>
-                          <span className="text-xl font-black text-rose-600">
-                            {monthlyTuitionStatus.totalTuition.toLocaleString('vi-VN')} ₫
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Nội dung thanh toán kèm nút sao chép */}
-                      <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-[10px] font-extrabold text-amber-800 uppercase tracking-wider">
-                            Nội dung thanh toán:
-                          </div>
-                          <div className="font-mono font-black text-[#0B486B] text-xs sm:text-sm truncate mt-0.5">
-                            {monthlyTuitionStatus.paymentMemo}
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            try {
-                              navigator.clipboard.writeText(monthlyTuitionStatus.paymentMemo);
-                              setCopiedTuitionMemo(true);
-                              setTimeout(() => setCopiedTuitionMemo(false), 2000);
-                            } catch {}
-                          }}
-                          className="px-3.5 py-2 rounded-xl bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-xs flex items-center gap-1.5 cursor-pointer shrink-0 shadow-2xs"
-                        >
-                          {copiedTuitionMemo ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>Đã chép</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3.5 h-3.5" />
-                              <span>Sao chép</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="py-6 text-center space-y-2">
-                      <p className="text-sm font-black text-[#0B486B]">
-                        Dữ liệu học phí tháng này của con đang được cập nhật. Xin cảm ơn phụ huynh!
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="flex justify-end pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsTuitionModalOpen(false)}
-                      className="px-5 py-2.5 rounded-xl bg-[#0B486B] text-white text-xs font-extrabold hover:bg-[#0072B5] transition-all cursor-pointer"
-                    >
-                      Đóng
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* POPUP MODAL THANH TOÁN HỌC PHÍ MULTI-TENANT QUA MÃ VIETQR & PAYOS */}
+          <TuitionPaymentModal
+            isOpen={isTuitionModalOpen}
+            onClose={() => setIsTuitionModalOpen(false)}
+            centerId={(activeCenterId || currentStudent?.centerId || 'HG01').trim()}
+            centerName={centerName || 'Trung Tâm Đào Tạo'}
+            studentId={currentStudent?.id || ''}
+            studentName={monthlyTuitionStatus.studentName}
+            classId={currentClass?.id || currentStudent?.classId || ''}
+            className={monthlyTuitionStatus.className}
+            month={`${selectedAttendanceMonth.split('-')[1]}/${selectedAttendanceMonth.split('-')[0]}`}
+            amount={monthlyTuitionStatus.totalTuition}
+            attendedSessions={monthlyTuitionStatus.attendedSessions}
+            bankId={monthlyTuitionStatus.bankId || 'MB'}
+            accountNo={monthlyTuitionStatus.accountNo || '09995879999'}
+            accountName={monthlyTuitionStatus.accountName || 'HUYNH THI HONG YEN'}
+            isAlreadyPaid={monthlyTuitionStatus.isPaid}
+            existingOrderCode={monthlyTuitionStatus.paidOrderCode}
+            onPaymentSuccess={(orderCode) => {
+              const formattedMonth = `${selectedAttendanceMonth.split('-')[1]}/${selectedAttendanceMonth.split('-')[0]}`;
+              setPaidMonthsMap((prev) => ({
+                ...prev,
+                [formattedMonth]: true,
+                [selectedAttendanceMonth]: true,
+              }));
+              setLeaveSentToast({
+                show: true,
+                msg: `Đã xác nhận thanh toán học phí Tháng ${formattedMonth} (Mã GD #${orderCode}) của em ${monthlyTuitionStatus.studentName} thành công!`,
+              });
+              setTimeout(() => {
+                setLeaveSentToast({ show: false, msg: '' });
+              }, 4500);
+            }}
+          />
         </div>
       )}
 

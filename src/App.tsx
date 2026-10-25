@@ -1071,9 +1071,18 @@ export default function App() {
     students.find(
       (s) =>
         Boolean(currentUser?.entityId && s.id === currentUser.entityId) ||
-        Boolean(currentUser?.phone && s.parentPhone && s.parentPhone.trim() === currentUser.phone.trim()) ||
-        Boolean(currentUser?.username && s.username && s.username.trim().toLowerCase() === currentUser.username.trim().toLowerCase()) ||
-        Boolean(currentUser?.id && s.id === currentUser.id.replace('ph-', ''))
+        Boolean((currentUser as any)?.studentId && s.id === (currentUser as any).studentId)
+    ) ||
+    students.find(
+      (s) =>
+        Boolean(
+          currentUser?.username &&
+            s.username &&
+            s.username.trim().toLowerCase() === currentUser.username.trim().toLowerCase()
+        ) || Boolean(currentUser?.id && s.id === currentUser.id.replace('ph-', ''))
+    ) ||
+    students.find((s) =>
+      Boolean(currentUser?.phone && s.parentPhone && s.parentPhone.trim() === currentUser.phone.trim())
     ) ||
     students[0] ||
     null;

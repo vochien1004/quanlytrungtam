@@ -36,6 +36,9 @@ import {
   finalizeMonthlyTuition,
   unfinalizeMonthlyTuition,
   getRealtimeMonthlyTuitionLocks,
+  TuitionPaymentRecord,
+  getRealtimeCenterTuitionPayments,
+  normalizeTuitionMonthPair,
 } from '../../services/firebaseService';
 import { AccountAvatar } from '../common/AccountAvatar';
 import { ExportMonthlyExcelModal } from './ExportMonthlyExcelModal';
@@ -105,6 +108,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   // Trạng thái chốt sổ học phí tháng (đồng bộ với tài khoản phụ huynh)
   const [tuitionLocks, setTuitionLocks] = useState<MonthlyTuitionLockItem[]>([]);
+  const [centerTuitionPayments, setCenterTuitionPayments] = useState<TuitionPaymentRecord[]>([]);
   const [lockingClassId, setLockingClassId] = useState<string | null>(null);
   const [tuitionToast, setTuitionToast] = useState<{ show: boolean; message: string; type: 'success' | 'info' }>({
     show: false,
@@ -122,6 +126,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   useEffect(() => {
     const unsub = getRealtimeMonthlyTuitionLocks(effectiveCenterId, (locks) => {
       setTuitionLocks(locks);
+    });
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [effectiveCenterId]);
+
+  useEffect(() => {
+    const unsub = getRealtimeCenterTuitionPayments(effectiveCenterId, (payments) => {
+      setCenterTuitionPayments(payments);
     });
     return () => {
       if (unsub) unsub();
@@ -312,6 +325,55 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     );
   };
 
+  const isStudentMonthPaid = (st: StudentItem, classId: string): boolean => {
+    if (!st) return false;
+    const { isoMonth, displayMonth } = normalizeTuitionMonthPair(selectedMonth);
+    const stId = String(st.id || '').trim();
+    const stName = String(st.name || '').trim().toLowerCase();
+
+    const paidMonths = (st as any)?.paidMonths || {};
+    const tuitionByMonth = (st as any)?.tuitionByMonth || {};
+    const statusStr = String(
+      tuitionByMonth[displayMonth] || tuitionByMonth[isoMonth] || ''
+    )
+      .toLowerCase()
+      .trim();
+
+    if (
+      paidMonths[displayMonth] ||
+      paidMonths[isoMonth] ||
+      statusStr === 'đã thanh toán' ||
+      statusStr === 'đã nộp' ||
+      statusStr === 'paid'
+    ) {
+      return true;
+    }
+
+    const lockDetails = getClassLockDetails(classId);
+    const snap = stId && lockDetails?.studentsMap ? lockDetails.studentsMap[stId] : undefined;
+    if (
+      snap?.isPaid ||
+      String(snap?.tuitionStatus || '')
+        .toLowerCase()
+        .trim() === 'đã thanh toán' ||
+      String(snap?.tuitionStatus || '')
+        .toLowerCase()
+        .trim() === 'đã nộp'
+    ) {
+      return true;
+    }
+
+    const hasPaidRecord = (centerTuitionPayments || []).some(
+      (p) =>
+        p &&
+        p.status === 'PAID' &&
+        ((stId && String(p.studentId || '').trim() === stId) ||
+          (stName && String(p.studentName || '').trim().toLowerCase() === stName)) &&
+        (p.isoMonth === isoMonth || p.displayMonth === displayMonth)
+    );
+    return hasPaidRecord;
+  };
+
   // Tạo danh sách dữ liệu học phí của học sinh trong lớp đồng bộ 100% với bảng điểm danh của giáo viên
   const buildClassStudentTuitionSnapshots = (
     cls: ClassItem,
@@ -326,6 +388,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         attendanceRecords: effectiveAttendanceRecords,
         classInfo: cls,
       });
+      const paid = isStudentMonthPaid(st, cls.id);
       return {
         studentId: st.id,
         studentCode: st.studentCode || st.id,
@@ -337,6 +400,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         attendedSessions,
         pricePerSession: price,
         totalTuition: attendedSessions * price,
+        isPaid: paid,
+        tuitionStatus: paid ? 'Đã thanh toán' : 'Chưa thanh toán',
       };
     });
   };
@@ -1262,7 +1327,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                               {/* Tổng tiền - Ẩn đối với tài khoản Giáo viên, chỉ hiển thị đối với center_admin */}
                               {showFinancials && (
                                 <td className="py-2 px-3 text-right font-black text-emerald-800 bg-emerald-50/20">
-                                  {(attendedCount * pricePerSession).toLocaleString('vi-VN')}
+                                  <div>{(attendedCount * pricePerSession).toLocaleString('vi-VN')}</div>
+                                  {isStudentMonthPaid(st, cls.id) && (
+                                    <span className="inline-flex items-center gap-0.5 mt-0.5 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[9px] font-black">
+                                      <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                      Đã thanh toán
+                                    </span>
+                                  )}
                                 </td>
                               )}
                             </tr>

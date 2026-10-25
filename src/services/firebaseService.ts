@@ -2522,6 +2522,15 @@ function mapDocToStudentItem(docSnap: any, targetCenterId: string): StudentItem 
     gpa: Number(data.gpa) || 8.0,
     recentGrade: data.recentGrade || `${Number(data.gpa) || 8.0} / 10`,
     status: data.status || 'active',
+    tuitionStatus: data.tuitionStatus || '',
+    tuitionByMonth:
+      data.tuitionByMonth && typeof data.tuitionByMonth === 'object' ? data.tuitionByMonth : {},
+    paidMonths: data.paidMonths && typeof data.paidMonths === 'object' ? data.paidMonths : {},
+    lastPaidMonth: data.lastPaidMonth || '',
+    lastPaidAmount: data.lastPaidAmount !== undefined ? Number(data.lastPaidAmount) : undefined,
+    lastPaidOrderCode:
+      data.lastPaidOrderCode !== undefined ? Number(data.lastPaidOrderCode) : undefined,
+    lastPaidAt: data.lastPaidAt || '',
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   };
@@ -4346,6 +4355,10 @@ export interface StudentTuitionSnapshot {
   attendedSessions: number; // Số buổi học có mặt
   pricePerSession: number; // Đơn giá / buổi
   totalTuition: number; // Học phí = attendedSessions * pricePerSession
+  isPaid?: boolean;
+  tuitionStatus?: string; // 'Đã thanh toán' | 'Chưa thanh toán'
+  paidOrderCode?: number;
+  paidAt?: string;
 }
 
 export interface MonthlyTuitionLockItem {
@@ -4510,10 +4523,21 @@ export async function finalizeMonthlyTuition(payload: {
     year: 'numeric',
   });
 
+  const existingLocalLock = getLocalTuitionLocks().find((x) => x.id === lockId);
   const studentsMap: Record<string, StudentTuitionSnapshot> = {};
   (payload.studentsList || []).forEach((s) => {
     if (s && s.studentId) {
-      studentsMap[s.studentId] = s;
+      const prevSnap = existingLocalLock?.studentsMap?.[s.studentId];
+      studentsMap[s.studentId] = {
+        ...s,
+        isPaid: Boolean(s.isPaid || prevSnap?.isPaid),
+        tuitionStatus:
+          s.tuitionStatus ||
+          prevSnap?.tuitionStatus ||
+          (s.isPaid || prevSnap?.isPaid ? 'Đã thanh toán' : undefined),
+        paidOrderCode: s.paidOrderCode ?? prevSnap?.paidOrderCode,
+        paidAt: s.paidAt ?? prevSnap?.paidAt,
+      };
     }
   });
 
@@ -4980,5 +5004,587 @@ export function getRealtimeCenterPaymentSettings(
     window.removeEventListener('tt_hocgioi_payment_settings_updated', handleLocalUpdate);
   };
 }
+
+// ============================================================================
+// 11. ĐỒNG BỘ ĐƠN HÀNG HỌC PHÍ PAYOS & TRẠNG THÁI "ĐÃ THANH TOÁN" CHO HỌC SINH
+// ============================================================================
+
+export interface TuitionPaymentRecord {
+  orderCode: number;
+  paymentLinkId?: string;
+  checkoutUrl?: string;
+  centerId: string;
+  centerName?: string;
+  studentId: string;
+  studentName: string;
+  classId?: string;
+  className: string;
+  month: string; // 'MM/YYYY' hoặc 'YYYY-MM'
+  isoMonth: string; // 'YYYY-MM'
+  displayMonth: string; // 'MM/YYYY'
+  attendedSessions: number;
+  amount: number;
+  description?: string;
+  status: 'PENDING' | 'PAID' | 'CANCELLED';
+  createdAt: string;
+  paidAt?: string;
+}
+
+const LOCAL_TUITION_PAYMENTS_KEY = 'tt_hocgioi_tuition_payments_v1';
+
+export function normalizeTuitionMonthPair(rawMonth: string): {
+  isoMonth: string;
+  displayMonth: string;
+} {
+  const trimmed = String(rawMonth || '').trim();
+  if (trimmed.includes('/')) {
+    const [m, y] = trimmed.split('/');
+    const cleanM = String(parseInt(m || '10', 10) || 10).padStart(2, '0');
+    const cleanY = String(y || new Date().getFullYear()).trim();
+    return {
+      isoMonth: `${cleanY}-${cleanM}`,
+      displayMonth: `${cleanM}/${cleanY}`,
+    };
+  }
+  if (trimmed.includes('-')) {
+    const parts = trimmed.split('-');
+    if (parts[0].length === 4) {
+      const cleanY = parts[0];
+      const cleanM = String(parseInt(parts[1] || '10', 10) || 10).padStart(2, '0');
+      return {
+        isoMonth: `${cleanY}-${cleanM}`,
+        displayMonth: `${cleanM}/${cleanY}`,
+      };
+    }
+    const cleanM = String(parseInt(parts[0] || '10', 10) || 10).padStart(2, '0');
+    const cleanY = parts[1] || String(new Date().getFullYear());
+    return {
+      isoMonth: `${cleanY}-${cleanM}`,
+      displayMonth: `${cleanM}/${cleanY}`,
+    };
+  }
+  const now = new Date();
+  const curY = String(now.getFullYear());
+  const curM = String(now.getMonth() + 1).padStart(2, '0');
+  return {
+    isoMonth: `${curY}-${curM}`,
+    displayMonth: `${curM}/${curY}`,
+  };
+}
+
+export function getLocalTuitionPayments(): TuitionPaymentRecord[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_TUITION_PAYMENTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => x && x.orderCode) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalTuitionPaymentRecord(record: TuitionPaymentRecord): void {
+  try {
+    const list = getLocalTuitionPayments();
+    const filtered = list.filter(
+      (x) =>
+        Number(x.orderCode) !== Number(record.orderCode) &&
+        !(
+          record.status === 'PAID' &&
+          x.studentId === record.studentId &&
+          x.isoMonth === record.isoMonth &&
+          x.status !== 'PAID'
+        )
+    );
+    const updated = [record, ...filtered];
+    localStorage.setItem(LOCAL_TUITION_PAYMENTS_KEY, JSON.stringify(updated));
+    window.dispatchEvent(
+      new CustomEvent('tt_hocgioi_tuition_payments_updated', { detail: record })
+    );
+  } catch {}
+}
+
+/**
+ * Lưu đơn hàng học phí PENDING vào cả `/tuition_payments/{orderCode}` (nếu cho phép)
+ * VÀ `/centers/{centerId}/tuition_payments/{orderCode}` bằng quyền quản trị Secondary App
+ */
+export async function savePendingTuitionPaymentOrder(params: {
+  orderCode: number;
+  paymentLinkId?: string;
+  checkoutUrl?: string;
+  centerId: string;
+  centerName?: string;
+  studentId: string;
+  studentName: string;
+  classId?: string;
+  className: string;
+  month: string;
+  attendedSessions: number;
+  amount: number;
+  description?: string;
+}): Promise<TuitionPaymentRecord> {
+  const cleanCenterId = (params.centerId || 'HG01').trim();
+  const { isoMonth, displayMonth } = normalizeTuitionMonthPair(params.month);
+  const nowIso = new Date().toISOString();
+
+  const record: TuitionPaymentRecord = {
+    orderCode: Number(params.orderCode),
+    paymentLinkId: params.paymentLinkId || '',
+    checkoutUrl: params.checkoutUrl || '',
+    centerId: cleanCenterId,
+    centerName: params.centerName || '',
+    studentId: String(params.studentId || '').trim(),
+    studentName: String(params.studentName || '').trim(),
+    classId: String(params.classId || '').trim(),
+    className: String(params.className || '').trim(),
+    month: displayMonth,
+    isoMonth,
+    displayMonth,
+    attendedSessions: Number(params.attendedSessions) || 0,
+    amount: Number(params.amount) || 0,
+    description: params.description || '',
+    status: 'PENDING',
+    createdAt: nowIso,
+  };
+
+  saveLocalTuitionPaymentRecord(record);
+
+  const writePending = async (targetDb: typeof db) => {
+    // 1. Subcollection của trung tâm: /centers/{centerId}/tuition_payments/{orderCode}
+    const centerOrderRef = doc(
+      targetDb,
+      'centers',
+      cleanCenterId,
+      'tuition_payments',
+      String(record.orderCode)
+    );
+    await setDoc(
+      centerOrderRef,
+      {
+        ...record,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // 2. Bản ghi theo học sinh + tháng để phục hồi kể cả khi tải lại trang
+    if (record.studentId) {
+      const studentMonthKey = `${record.studentId}_${isoMonth}`;
+      const studentMonthRef = doc(
+        targetDb,
+        'centers',
+        cleanCenterId,
+        'tuition_payments',
+        studentMonthKey
+      );
+      const existingSnap = await getDoc(studentMonthRef).catch(() => null);
+      const existingStatus = existingSnap?.exists()
+        ? String(existingSnap.data()?.status || '').toUpperCase()
+        : '';
+      if (existingStatus !== 'PAID') {
+        await setDoc(
+          studentMonthRef,
+          {
+            ...record,
+            id: studentMonthKey,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    }
+
+    // 3. Root collection /tuition_payments/{orderCode} (dự phòng)
+    await setDoc(
+      doc(targetDb, 'tuition_payments', String(record.orderCode)),
+      {
+        ...record,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  };
+
+  try {
+    const privDb = await getPrivilegedDbForCenter(cleanCenterId);
+    await writePending(privDb);
+  } catch {
+    try {
+      await writePending(db);
+    } catch {}
+  }
+
+  return record;
+}
+
+/**
+ * Ghi nhận hoàn tất thanh toán học phí (PAID) đồng bộ 100% lên:
+ * 1) `/centers/{centerId}/tuition_payments/{orderCode}` và `{studentId}_{isoMonth}`
+ * 2) `/centers/{centerId}/students/{studentId}` (tuitionStatus = 'Đã thanh toán', tuitionByMonth, paidMonths)
+ * 3) `/centers/{centerId}/tuition_locks/{lockId}` (studentsMap[studentId].isPaid = true, tuitionStatus = 'Đã thanh toán')
+ * 4) Bộ nhớ đệm localStorage & CustomEvent để giao diện Phụ huynh và Quản trị cập nhật tức thì
+ */
+export async function recordStudentTuitionPaymentSuccess(params: {
+  orderCode: number;
+  paymentLinkId?: string;
+  centerId: string;
+  centerName?: string;
+  studentId: string;
+  studentName: string;
+  classId?: string;
+  className: string;
+  month: string;
+  attendedSessions: number;
+  amount: number;
+  description?: string;
+}): Promise<void> {
+  const cleanCenterId = (params.centerId || 'HG01').trim();
+  const cleanStudentId = String(params.studentId || '').trim();
+  const { isoMonth, displayMonth } = normalizeTuitionMonthPair(params.month);
+  const nowIso = new Date().toISOString();
+  const orderCodeNum = Number(params.orderCode) || Number(String(Date.now()).slice(-6));
+
+  const paidRecord: TuitionPaymentRecord = {
+    orderCode: orderCodeNum,
+    paymentLinkId: params.paymentLinkId || '',
+    centerId: cleanCenterId,
+    centerName: params.centerName || '',
+    studentId: cleanStudentId,
+    studentName: String(params.studentName || '').trim(),
+    classId: String(params.classId || '').trim(),
+    className: String(params.className || '').trim(),
+    month: displayMonth,
+    isoMonth,
+    displayMonth,
+    attendedSessions: Number(params.attendedSessions) || 0,
+    amount: Number(params.amount) || 0,
+    description: params.description || '',
+    status: 'PAID',
+    createdAt: nowIso,
+    paidAt: nowIso,
+  };
+
+  // 1. Lưu ngay vào localStorage để UI cập nhật không độ trễ
+  saveLocalTuitionPaymentRecord(paidRecord);
+
+  // Cập nhật localStorage tuition locks
+  try {
+    const localLocks = getLocalTuitionLocks();
+    let locksChanged = false;
+    const updatedLocks = localLocks.map((lock) => {
+      if (!lock || lock.centerId !== cleanCenterId || lock.month !== isoMonth) return lock;
+      if (lock.studentsMap && cleanStudentId && lock.studentsMap[cleanStudentId]) {
+        locksChanged = true;
+        return {
+          ...lock,
+          studentsMap: {
+            ...lock.studentsMap,
+            [cleanStudentId]: {
+              ...lock.studentsMap[cleanStudentId],
+              isPaid: true,
+              tuitionStatus: 'Đã thanh toán',
+              paidOrderCode: orderCodeNum,
+              paidAt: nowIso,
+            },
+          },
+        };
+      }
+      return lock;
+    });
+    if (locksChanged) {
+      saveLocalTuitionLocks(updatedLocks);
+    }
+  } catch {}
+
+  // Cập nhật localStorage danh sách học sinh của trung tâm
+  try {
+    const rawStudents = localStorage.getItem('tt_hocgioi_students_' + cleanCenterId);
+    if (rawStudents && cleanStudentId) {
+      const parsed = JSON.parse(rawStudents);
+      if (Array.isArray(parsed)) {
+        const nextStudents = parsed.map((st: any) => {
+          if (!st || String(st.id).trim() !== cleanStudentId) return st;
+          return {
+            ...st,
+            tuitionStatus: 'Đã thanh toán',
+            tuitionByMonth: {
+              ...(st.tuitionByMonth || {}),
+              [displayMonth]: 'Đã thanh toán',
+              [isoMonth]: 'Đã thanh toán',
+            },
+            paidMonths: {
+              ...(st.paidMonths || {}),
+              [displayMonth]: true,
+              [isoMonth]: true,
+            },
+            lastPaidMonth: displayMonth,
+            lastPaidAmount: Number(params.amount) || 0,
+            lastPaidOrderCode: orderCodeNum,
+            lastPaidAt: nowIso,
+          };
+        });
+        localStorage.setItem('tt_hocgioi_students_' + cleanCenterId, JSON.stringify(nextStudents));
+      }
+    }
+  } catch {}
+
+  // 2. Đồng bộ lên Cloud Firestore thông qua Privileged Secondary DB (Admin Session)
+  const syncPaidToFirestore = async (targetDb: typeof db) => {
+    // a. Ghi vào /centers/{centerId}/tuition_payments/{orderCode} & {studentId}_{isoMonth}
+    const orderDocRef = doc(
+      targetDb,
+      'centers',
+      cleanCenterId,
+      'tuition_payments',
+      String(orderCodeNum)
+    );
+    await setDoc(
+      orderDocRef,
+      {
+        ...paidRecord,
+        status: 'PAID',
+        paidAt: nowIso,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (cleanStudentId) {
+      const studentMonthKey = `${cleanStudentId}_${isoMonth}`;
+      const studentMonthRef = doc(
+        targetDb,
+        'centers',
+        cleanCenterId,
+        'tuition_payments',
+        studentMonthKey
+      );
+      await setDoc(
+        studentMonthRef,
+        {
+          ...paidRecord,
+          id: studentMonthKey,
+          status: 'PAID',
+          paidAt: nowIso,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    // b. Cập nhật hồ sơ học sinh tại /centers/{centerId}/students/{studentId}
+    if (cleanStudentId) {
+      const studentRef = doc(targetDb, 'centers', cleanCenterId, 'students', cleanStudentId);
+      await setDoc(
+        studentRef,
+        {
+          tuitionStatus: 'Đã thanh toán',
+          tuitionByMonth: {
+            [displayMonth]: 'Đã thanh toán',
+            [isoMonth]: 'Đã thanh toán',
+          },
+          paidMonths: {
+            [displayMonth]: true,
+            [isoMonth]: true,
+          },
+          lastPaidMonth: displayMonth,
+          lastPaidAmount: Number(params.amount) || 0,
+          lastPaidOrderCode: orderCodeNum,
+          lastPaidAt: nowIso,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    // c. Cập nhật trạng thái Đã thanh toán vào các bản chốt sổ học phí /centers/{centerId}/tuition_locks
+    if (cleanStudentId) {
+      const locksColRef = collection(targetDb, 'centers', cleanCenterId, 'tuition_locks');
+      const locksSnap = await getDocs(locksColRef).catch(() => null);
+      if (locksSnap && !locksSnap.empty) {
+        for (const lockDoc of locksSnap.docs) {
+          const lockData = lockDoc.data() as any;
+          if (lockData?.month === isoMonth && lockData?.studentsMap?.[cleanStudentId]) {
+            const updatedStudentEntry = {
+              ...lockData.studentsMap[cleanStudentId],
+              isPaid: true,
+              tuitionStatus: 'Đã thanh toán',
+              paidOrderCode: orderCodeNum,
+              paidAt: nowIso,
+            };
+            await setDoc(
+              doc(targetDb, 'centers', cleanCenterId, 'tuition_locks', lockDoc.id),
+              {
+                studentsMap: {
+                  [cleanStudentId]: updatedStudentEntry,
+                },
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            ).catch(() => {});
+          }
+        }
+      }
+    }
+
+    // d. Dự phòng ghi vào root /tuition_payments/{orderCode}
+    await setDoc(
+      doc(targetDb, 'tuition_payments', String(orderCodeNum)),
+      {
+        ...paidRecord,
+        status: 'PAID',
+        paidAt: nowIso,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  };
+
+  try {
+    const privDb = await getPrivilegedDbForCenter(cleanCenterId);
+    await syncPaidToFirestore(privDb);
+  } catch (err) {
+    console.warn('Lưu ý đồng bộ trạng thái học phí qua privDb, thử lại bằng db:', err);
+    try {
+      await syncPaidToFirestore(db);
+    } catch {}
+  }
+}
+
+/**
+ * Lắng nghe Realtime danh sách giao dịch học phí của trung tâm từ `/centers/{centerId}/tuition_payments`
+ */
+export function getRealtimeCenterTuitionPayments(
+  centerId: string,
+  onUpdate: (payments: TuitionPaymentRecord[]) => void
+): Unsubscribe {
+  const cleanCenterId = (centerId || '').trim();
+  let subList: TuitionPaymentRecord[] = [];
+
+  const mergeAndEmit = () => {
+    const map = new Map<string, TuitionPaymentRecord>();
+
+    for (const item of getLocalTuitionPayments()) {
+      if (item && (!cleanCenterId || item.centerId === cleanCenterId)) {
+        const key = `${item.studentId}_${item.isoMonth}_${item.orderCode}`;
+        map.set(key, item);
+      }
+    }
+
+    for (const item of subList) {
+      if (item && (!cleanCenterId || item.centerId === cleanCenterId)) {
+        const key = `${item.studentId}_${item.isoMonth}_${item.orderCode}`;
+        map.set(key, { ...(map.get(key) || {}), ...item });
+      }
+    }
+
+    onUpdate(Array.from(map.values()));
+  };
+
+  let unsubSub: Unsubscribe | null = null;
+  if (cleanCenterId) {
+    unsubSub = onSnapshot(
+      collection(db, 'centers', cleanCenterId, 'tuition_payments'),
+      (snap) => {
+        subList = snap.docs.map((d) => {
+          const data = d.data() as any;
+          const { isoMonth, displayMonth } = normalizeTuitionMonthPair(
+            data.isoMonth || data.month || ''
+          );
+          return {
+            orderCode: Number(data.orderCode || d.id) || 0,
+            paymentLinkId: data.paymentLinkId || '',
+            checkoutUrl: data.checkoutUrl || '',
+            centerId: data.centerId || cleanCenterId,
+            centerName: data.centerName || '',
+            studentId: String(data.studentId || '').trim(),
+            studentName: String(data.studentName || '').trim(),
+            classId: String(data.classId || '').trim(),
+            className: String(data.className || '').trim(),
+            month: displayMonth,
+            isoMonth,
+            displayMonth,
+            attendedSessions: Number(data.attendedSessions) || 0,
+            amount: Number(data.amount) || 0,
+            description: data.description || '',
+            status:
+              String(data.status || '').toUpperCase().trim() === 'PAID'
+                ? 'PAID'
+                : String(data.status || '').toUpperCase().trim() === 'CANCELLED'
+                ? 'CANCELLED'
+                : 'PENDING',
+            createdAt: data.createdAt || '',
+            paidAt: data.paidAt || '',
+          };
+        });
+        mergeAndEmit();
+      },
+      () => {
+        mergeAndEmit();
+      }
+    );
+  }
+
+  const handleLocal = () => mergeAndEmit();
+  window.addEventListener('tt_hocgioi_tuition_payments_updated', handleLocal);
+
+  mergeAndEmit();
+
+  return () => {
+    if (unsubSub) unsubSub();
+    window.removeEventListener('tt_hocgioi_tuition_payments_updated', handleLocal);
+  };
+}
+
+/**
+ * Kiểm tra trực tiếp trạng thái thanh toán từ cổng PayOS thông qua paymentLinkId hoặc checkoutUrl
+ */
+export async function checkPayOSPaymentStatus(params: {
+  paymentLinkId?: string;
+  checkoutUrl?: string;
+}): Promise<{ isPaid: boolean; status: string; raw?: any }> {
+  try {
+    const paymentLinkId = String(params.paymentLinkId || '').trim();
+    const checkoutUrl = String(params.checkoutUrl || '').trim();
+    if (!paymentLinkId && !checkoutUrl) {
+      return { isPaid: false, status: 'PENDING' };
+    }
+
+    const res = await fetch('/api/payos/check-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        paymentLinkId,
+        checkoutUrl,
+      }),
+    });
+
+    if (!res.ok) {
+      return { isPaid: false, status: 'PENDING' };
+    }
+
+    const result = await res.json();
+    const statusStr = String(
+      result?.data?.status || result?.status || 'PENDING'
+    )
+      .toUpperCase()
+      .trim();
+    const amountRemaining = result?.data?.amountRemaining;
+    const isPaid =
+      statusStr === 'PAID' ||
+      statusStr === 'SUCCESS' ||
+      (statusStr === 'PROCESSING' && amountRemaining === 0);
+
+    return {
+      isPaid,
+      status: isPaid ? 'PAID' : statusStr,
+      raw: result,
+    };
+  } catch {
+    return { isPaid: false, status: 'PENDING' };
+  }
+}
+
 
 

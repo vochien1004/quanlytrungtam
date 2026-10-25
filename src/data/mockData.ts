@@ -63,6 +63,13 @@ export interface StudentItem {
   gpa: number;
   recentGrade: string;
   status?: 'active' | 'probation' | 'suspended';
+  tuitionStatus?: string; // 'Đã thanh toán' | 'Đã nộp' | 'Chưa thanh toán'
+  tuitionByMonth?: Record<string, string>; // { '10/2026': 'Đã thanh toán', '2026-10': 'Đã thanh toán' }
+  paidMonths?: Record<string, boolean>; // { '10/2026': true, '2026-10': true }
+  lastPaidMonth?: string;
+  lastPaidAmount?: number;
+  lastPaidOrderCode?: number;
+  lastPaidAt?: string;
   createdAt?: any;
   updatedAt?: any;
 }
