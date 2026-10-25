@@ -4528,16 +4528,37 @@ export async function finalizeMonthlyTuition(payload: {
   (payload.studentsList || []).forEach((s) => {
     if (s && s.studentId) {
       const prevSnap = existingLocalLock?.studentsMap?.[s.studentId];
-      studentsMap[s.studentId] = {
-        ...s,
-        isPaid: Boolean(s.isPaid || prevSnap?.isPaid),
-        tuitionStatus:
-          s.tuitionStatus ||
-          prevSnap?.tuitionStatus ||
-          (s.isPaid || prevSnap?.isPaid ? 'Đã thanh toán' : undefined),
-        paidOrderCode: s.paidOrderCode ?? prevSnap?.paidOrderCode,
-        paidAt: s.paidAt ?? prevSnap?.paidAt,
+      const isStudentPaid = Boolean(s.isPaid || prevSnap?.isPaid);
+      const resolvedStatus =
+        s.tuitionStatus ||
+        prevSnap?.tuitionStatus ||
+        (isStudentPaid ? 'Đã thanh toán' : 'Chưa thanh toán');
+      const resolvedOrderCode = s.paidOrderCode ?? prevSnap?.paidOrderCode;
+      const resolvedPaidAt = s.paidAt ?? prevSnap?.paidAt;
+
+      const cleanEntry: StudentTuitionSnapshot = {
+        studentId: String(s.studentId).trim(),
+        studentCode: String(s.studentCode || s.studentId).trim(),
+        studentName: String(s.studentName || 'Học sinh').trim(),
+        parentPhone: String(s.parentPhone || '').trim(),
+        classId: String(s.classId || cleanClassId).trim(),
+        className: String(s.className || payload.className || '').trim(),
+        month: cleanMonth,
+        attendedSessions: Number(s.attendedSessions) || 0,
+        pricePerSession: Number(s.pricePerSession ?? payload.pricePerSession) || 40000,
+        totalTuition: Number(s.totalTuition) || 0,
+        isPaid: isStudentPaid,
+        tuitionStatus: resolvedStatus,
       };
+
+      if (resolvedOrderCode !== undefined && resolvedOrderCode !== null) {
+        cleanEntry.paidOrderCode = Number(resolvedOrderCode);
+      }
+      if (resolvedPaidAt !== undefined && resolvedPaidAt !== null && String(resolvedPaidAt).trim()) {
+        cleanEntry.paidAt = String(resolvedPaidAt).trim();
+      }
+
+      studentsMap[s.studentId] = cleanEntry;
     }
   });
 
@@ -4558,7 +4579,7 @@ export async function finalizeMonthlyTuition(payload: {
   const currentLocal = getLocalTuitionLocks().filter((x) => x.id !== lockId);
   saveLocalTuitionLocks([lockItem, ...currentLocal]);
 
-  // 2. Đồng bộ lên Cloud Firestore tại `/centers/{centerId}/tuition_locks/{lockId}` và `/tuition_locks/{lockId}`
+  // 2. Đồng bộ lên Cloud Firestore tại `/centers/{centerId}/tuition_locks/{lockId}`
   const writeLockToFirestore = async (targetDb: typeof db) => {
     const subRef = doc(targetDb, 'centers', cleanCenterId, 'tuition_locks', lockId);
     await setDoc(
@@ -4570,17 +4591,6 @@ export async function finalizeMonthlyTuition(payload: {
       },
       { merge: true }
     );
-
-    const rootRef = doc(targetDb, 'tuition_locks', lockId);
-    await setDoc(
-      rootRef,
-      {
-        ...lockItem,
-        finalizedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    ).catch(() => {});
   };
 
   try {

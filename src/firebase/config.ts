@@ -25,10 +25,15 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Cloud Firestore with persistent local cache for instant cold-starts
 function createFirestoreInstance() {
   if (typeof window === 'undefined') {
-    return getFirestore(app);
+    try {
+      return initializeFirestore(app, { ignoreUndefinedProperties: true });
+    } catch {
+      return getFirestore(app);
+    }
   }
   try {
     return initializeFirestore(app, {
+      ignoreUndefinedProperties: true,
       localCache: persistentLocalCache({
         tabManager: persistentMultipleTabManager()
       })
@@ -59,7 +64,11 @@ export function getSecondaryDb() {
   const secondaryAppName = 'SecondaryAdminAuthApp';
   const secondaryApp = getApps().find(a => a.name === secondaryAppName) 
     || initializeApp(firebaseConfig, secondaryAppName);
-  return getFirestore(secondaryApp);
+  try {
+    return initializeFirestore(secondaryApp, { ignoreUndefinedProperties: true });
+  } catch {
+    return getFirestore(secondaryApp);
+  }
 }
 
 // Secondary Storage Instance matching Secondary Auth
