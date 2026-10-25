@@ -3114,9 +3114,29 @@ async function getPrivilegedDbForCenter(centerId: string, teacherIdHint?: string
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
-  const candidateCreds: Array<{ email: string; pass: string; role: string }> = [];
+  const candidateCreds: Array<{ email: string; pass: string; role: string }> = [
+    { email: 'admin@tthocgioi.edu.vn', pass: 'Admin@123456', role: 'super_admin' },
+  ];
 
-  // 1. Ưu tiên thông tin Giáo viên phụ trách lớp / bài tập từ Subcollection `/centers/{validCenterId}/teachers`
+  // 1. Tài khoản Quản trị viên trung tâm
+  const adminU = String(centerData.adminUsername || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '');
+  const adminP = String(centerData.adminPassword || '123456').trim();
+  const normAdminP = adminP.length >= 6 ? adminP : `${adminP}123456`;
+  if (centerData.email && String(centerData.email).includes('@')) {
+    candidateCreds.push({ email: String(centerData.email).trim().toLowerCase(), pass: normAdminP, role: 'center_admin' });
+  }
+  if (adminU) {
+    candidateCreds.push({
+      email: `${adminU}@${centerCode || cleanCenterPart}.hocgioi.edu.vn`,
+      pass: normAdminP,
+      role: 'center_admin',
+    });
+  }
+
+  // 2. Thông tin Giáo viên phụ trách lớp / bài tập từ Subcollection `/centers/{validCenterId}/teachers`
   try {
     const teachersSubSnap = await getDocs(collection(db, 'centers', validCenterId, 'teachers'));
     const subTeachers = teachersSubSnap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
@@ -3146,30 +3166,10 @@ async function getPrivilegedDbForCenter(centerId: string, teacherIdHint?: string
     }
   } catch {}
 
-  // 2. Tài khoản Quản trị viên trung tâm
-  const adminU = String(centerData.adminUsername || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^@+/, '');
-  const adminP = String(centerData.adminPassword || '123456').trim();
-  const normAdminP = adminP.length >= 6 ? adminP : `${adminP}123456`;
-  if (centerData.email && String(centerData.email).includes('@')) {
-    candidateCreds.push({ email: String(centerData.email).trim().toLowerCase(), pass: normAdminP, role: 'center_admin' });
-  }
-  if (adminU) {
-    candidateCreds.push({
-      email: `${adminU}@${centerCode || cleanCenterPart}.hocgioi.edu.vn`,
-      pass: normAdminP,
-      role: 'center_admin',
-    });
-  }
-
-  // 3. Tài khoản đồng bộ hệ thống & Super Admin
-  candidateCreds.push({ email: 'admin@tthocgioi.edu.vn', pass: 'Admin@123456', role: 'super_admin' });
   const syncEmail = `sync_${cleanCenterPart}@tthocgioi.edu.vn`;
   const syncPass = 'Sync@123456';
 
-  let signedInRole = 'teacher';
+  let signedInRole = 'super_admin';
   let authedUser = secondaryAuth.currentUser;
 
   if (!authedUser) {
@@ -3180,6 +3180,19 @@ async function getPrivilegedDbForCenter(centerId: string, teacherIdHint?: string
         signedInRole = cred.role;
         break;
       } catch {}
+    }
+  } else {
+    const curEmail = String(authedUser.email || '').toLowerCase();
+    if (curEmail === 'admin@tthocgioi.edu.vn') {
+      signedInRole = 'super_admin';
+    } else if (
+      authedUser.uid === centerData.adminUid ||
+      authedUser.uid === centerData.ownerUid ||
+      (centerData.email && curEmail === String(centerData.email).trim().toLowerCase())
+    ) {
+      signedInRole = 'center_admin';
+    } else {
+      signedInRole = 'teacher';
     }
   }
 
@@ -3202,18 +3215,29 @@ async function getPrivilegedDbForCenter(centerId: string, teacherIdHint?: string
     }
   }
 
-  // Đảm bảo hồ sơ /users/{uid} trên Secondary Auth có đầy đủ centerId và role hợp lệ để vượt qua Security Rules
+  // Đảm bảo hồ sơ /users/{uid} trên Secondary Auth có đầy đủ centerId và role hợp lệ, TUYỆT ĐỐI KHÔNG ghi đè role center_admin thành teacher
   if (authedUser) {
     try {
+      const isCenterOwner =
+        signedInRole === 'center_admin' ||
+        authedUser.uid === centerData.adminUid ||
+        authedUser.uid === centerData.ownerUid;
+      const effectiveRole =
+        signedInRole === 'super_admin'
+          ? 'super_admin'
+          : isCenterOwner
+          ? 'center_admin'
+          : 'teacher';
+
       await setDoc(
         doc(secondaryDb, 'users', authedUser.uid),
         {
           uid: authedUser.uid,
           id: authedUser.uid,
-          role: signedInRole === 'super_admin' ? 'super_admin' : 'teacher',
-          userRole: signedInRole,
+          role: effectiveRole,
+          userRole: effectiveRole,
           roles: ['super_admin', 'center_admin', 'admin', 'teacher', 'teachers', 'parent', 'parents'],
-          centerId: validCenterId,
+          centerId: effectiveRole === 'super_admin' ? '' : validCenterId,
           status: 'active',
           updatedAt: serverTimestamp(),
         },
@@ -5203,16 +5227,6 @@ export async function savePendingTuitionPaymentOrder(params: {
         );
       }
     }
-
-    // 3. Root collection /tuition_payments/{orderCode} (dự phòng)
-    await setDoc(
-      doc(targetDb, 'tuition_payments', String(record.orderCode)),
-      {
-        ...record,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    ).catch(() => {});
   };
 
   try {
@@ -5435,18 +5449,6 @@ export async function recordStudentTuitionPaymentSuccess(params: {
         }
       }
     }
-
-    // d. Dự phòng ghi vào root /tuition_payments/{orderCode}
-    await setDoc(
-      doc(targetDb, 'tuition_payments', String(orderCodeNum)),
-      {
-        ...paidRecord,
-        status: 'PAID',
-        paidAt: nowIso,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    ).catch(() => {});
   };
 
   try {
@@ -5545,32 +5547,163 @@ export function getRealtimeCenterTuitionPayments(
   };
 }
 
+let isApiCheckStatusSupported = true;
+
+export function extractPayOSPaymentLinkId(
+  paymentLinkId?: string,
+  checkoutUrl?: string
+): string {
+  const direct = String(paymentLinkId || '').trim();
+  if (direct && /^[a-zA-Z0-9_-]+$/.test(direct)) {
+    return direct;
+  }
+  const url = String(checkoutUrl || '').trim();
+  if (url) {
+    const match = url.match(/\/(?:web|embedded)\/([a-zA-Z0-9_-]+)/i);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+  return '';
+}
+
 /**
- * Kiểm tra trực tiếp trạng thái thanh toán từ cổng PayOS thông qua paymentLinkId hoặc checkoutUrl
+ * Tạo URL nhúng ẩn chuẩn của PayOS (`?iframe=true&redirect_uri=...`).
+ * Khi nhúng trong <iframe> ẩn, trang pay.payos.vn tự động kiểm tra trạng thái trên cùng domain pay.payos.vn
+ * (không bao giờ bị lỗi CORS hay 405 trên Cloudflare Pages) và bắn `window.parent.postMessage` ngay khi PAID.
+ */
+export function buildPayOSIframeListenerUrl(params: {
+  paymentLinkId?: string;
+  checkoutUrl?: string;
+  redirectUri?: string;
+}): string {
+  const linkId = extractPayOSPaymentLinkId(params.paymentLinkId, params.checkoutUrl);
+  if (!linkId) return '';
+  const origin = (
+    params.redirectUri ||
+    (typeof window !== 'undefined' ? window.location.origin : 'https://quanlytrungtam.pages.dev')
+  )
+    .trim()
+    .replace(/\/+$/, '');
+  return `https://pay.payos.vn/web/${encodeURIComponent(
+    linkId
+  )}?iframe=true&redirect_uri=${encodeURIComponent(origin)}`;
+}
+
+/**
+ * Giải mã tín hiệu `postMessage` chính thức gửi từ cổng `https://pay.payos.vn`
+ */
+export function parsePayOSPostMessageEvent(event: MessageEvent): {
+  isPayOSEvent: boolean;
+  isPayOSMessage: boolean;
+  isPaid: boolean;
+  isCancelled: boolean;
+  status: string;
+  orderCode?: number;
+  paymentLinkId?: string;
+} {
+  try {
+    const origin = String(event?.origin || '').toLowerCase();
+    if (!origin.includes('payos.vn')) {
+      return {
+        isPayOSEvent: false,
+        isPayOSMessage: false,
+        isPaid: false,
+        isCancelled: false,
+        status: '',
+      };
+    }
+
+    const raw = event.data;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!parsed || typeof parsed !== 'object') {
+      return {
+        isPayOSEvent: false,
+        isPayOSMessage: false,
+        isPaid: false,
+        isCancelled: false,
+        status: '',
+      };
+    }
+
+    const payload = parsed.data || parsed;
+    const statusStr = String(payload?.status || parsed?.status || '')
+      .toUpperCase()
+      .trim();
+    const codeStr = String(payload?.code || parsed?.code || '').trim();
+    const cancelStr = String(payload?.cancel ?? '').toLowerCase();
+
+    const isPaid =
+      statusStr === 'PAID' ||
+      statusStr === 'SUCCESS' ||
+      statusStr === 'COMPLETED' ||
+      (codeStr === '00' && cancelStr === 'false' && statusStr !== 'CANCELLED');
+    const isCancelled = statusStr === 'CANCELLED' || cancelStr === 'true';
+
+    const orderCodeNum = Number(payload?.orderCode || parsed?.orderCode) || undefined;
+    const paymentLinkId = String(
+      payload?.id || payload?.paymentLinkId || parsed?.id || ''
+    ).trim();
+
+    return {
+      isPayOSEvent: true,
+      isPayOSMessage: true,
+      isPaid,
+      isCancelled,
+      status: isPaid ? 'PAID' : statusStr,
+      orderCode: orderCodeNum,
+      paymentLinkId: paymentLinkId || undefined,
+    };
+  } catch {
+    return {
+      isPayOSEvent: false,
+      isPayOSMessage: false,
+      isPaid: false,
+      isCancelled: false,
+      status: '',
+    };
+  }
+}
+
+/**
+ * Kiểm tra trực tiếp trạng thái thanh toán từ cổng PayOS thông qua paymentLinkId hoặc checkoutUrl.
+ * Dùng phương thức GET để tương thích hoàn toàn với Cloudflare Pages / Static Hosting (không bao giờ gây lỗi POST 405).
  */
 export async function checkPayOSPaymentStatus(params: {
   paymentLinkId?: string;
   checkoutUrl?: string;
 }): Promise<{ isPaid: boolean; status: string; raw?: any }> {
   try {
-    const paymentLinkId = String(params.paymentLinkId || '').trim();
-    const checkoutUrl = String(params.checkoutUrl || '').trim();
-    if (!paymentLinkId && !checkoutUrl) {
+    if (!isApiCheckStatusSupported) {
       return { isPaid: false, status: 'PENDING' };
     }
 
-    const res = await fetch('/api/payos/check-status', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        paymentLinkId,
-        checkoutUrl,
-      }),
-    });
+    const linkId = extractPayOSPaymentLinkId(params.paymentLinkId, params.checkoutUrl);
+    if (!linkId) {
+      return { isPaid: false, status: 'PENDING' };
+    }
 
-    if (!res.ok) {
+    const res = await fetch(
+      `/api/payos/check-status?paymentLinkId=${encodeURIComponent(linkId)}`,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (res.status === 405 || res.status === 404) {
+      isApiCheckStatusSupported = false;
+      return { isPaid: false, status: 'PENDING' };
+    }
+
+    const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+    if (!res.ok || !contentType.includes('application/json')) {
+      if (contentType.includes('text/html')) {
+        // Static SPA fallback returned index.html -> disable further API polling and rely on PayOS postMessage iframe + Firestore
+        isApiCheckStatusSupported = false;
+      }
       return { isPaid: false, status: 'PENDING' };
     }
 

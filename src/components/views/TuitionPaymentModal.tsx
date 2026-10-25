@@ -21,6 +21,8 @@ import {
   savePendingTuitionPaymentOrder,
   recordStudentTuitionPaymentSuccess,
   checkPayOSPaymentStatus,
+  buildPayOSIframeListenerUrl,
+  parsePayOSPostMessageEvent,
   normalizeTuitionMonthPair,
 } from '../../services/firebaseService';
 
@@ -264,23 +266,8 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
         await ensureAuthSession('parent').catch(() => {});
       } catch {}
 
-      // BƯỚC 1: Lưu document PENDING vào Firestore (cả root tuition_payments/${orderCode} và /centers/${centerId}/tuition_payments/${orderCode})
+      // BƯỚC 1: Lưu document PENDING vào Firestore `/centers/${centerId}/tuition_payments/${String(orderCode)}`
       try {
-        await setDoc(doc(db, 'tuition_payments', String(generatedOrderCode)), {
-          orderCode: Number(generatedOrderCode),
-          studentId: studentId || '',
-          studentName: studentName || '',
-          className: className || '',
-          centerId: effectiveCenterId,
-          centerName: centerName || '',
-          month: month || '',
-          attendedSessions: Number(attendedSessions) || 0,
-          description: cleanDescription,
-          amount: Number(amount) || 0,
-          status: 'PENDING',
-          createdAt: new Date().toISOString(),
-        }).catch(() => {});
-
         await savePendingTuitionPaymentOrder({
           orderCode: Number(generatedOrderCode),
           centerId: effectiveCenterId,
@@ -318,8 +305,8 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
             className: className || '',
             month: month || '',
             attendedSessions: Number(attendedSessions) || 0,
-            returnUrl: window.location.origin,
-            cancelUrl: window.location.origin,
+            returnUrl: window.location.origin.replace(/\/+$/, ''),
+            cancelUrl: window.location.origin.replace(/\/+$/, ''),
           }),
         });
 
@@ -362,29 +349,6 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
           amount: Number(amount) || 0,
           description: payosData?.description || cleanDescription,
         });
-
-        if (finalOrderCode !== generatedOrderCode && !isCancelled) {
-          await setDoc(
-            doc(db, 'tuition_payments', String(finalOrderCode)),
-            {
-              orderCode: finalOrderCode,
-              paymentLinkId: returnedPaymentLinkId,
-              checkoutUrl: returnedCheckoutUrl,
-              studentId: studentId || '',
-              studentName: studentName || '',
-              className: className || '',
-              centerId: effectiveCenterId,
-              centerName: centerName || '',
-              month: month || '',
-              attendedSessions: Number(attendedSessions) || 0,
-              description: cleanDescription,
-              amount: Number(amount) || 0,
-              status: 'PENDING',
-              createdAt: new Date().toISOString(),
-            },
-            { merge: true }
-          ).catch(() => {});
-        }
 
         const returnedQrCode =
           payosData?.qrCode ||
@@ -451,19 +415,7 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       }
     };
 
-    // 2a. Lắng nghe trên root collection `tuition_payments/${String(orderCode)}`
-    const rootDocRef = doc(db, 'tuition_payments', String(orderCode));
-    const unsubRoot = onSnapshot(
-      rootDocRef,
-      (snapshot) => {
-        if (snapshot.exists()) {
-          handleSnapshotData(snapshot.data());
-        }
-      },
-      () => {}
-    );
-
-    // 2b. Lắng nghe trên sub-collection của trung tâm `/centers/${effectiveCenterId}/tuition_payments/${String(orderCode)}`
+    // 2a. Lắng nghe trên sub-collection của trung tâm `/centers/${effectiveCenterId}/tuition_payments/${String(orderCode)}`
     const centerOrderDocRef = doc(
       db,
       'centers',
@@ -481,7 +433,7 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       () => {}
     );
 
-    // 2c. Lắng nghe trên bản ghi học sinh + tháng `/centers/${effectiveCenterId}/tuition_payments/${studentId}_${isoMonth}`
+    // 2b. Lắng nghe trên bản ghi học sinh + tháng `/centers/${effectiveCenterId}/tuition_payments/${studentId}_${isoMonth}`
     let unsubStudentMonth = () => {};
     if (studentId) {
       const { isoMonth } = normalizeTuitionMonthPair(month);
@@ -504,7 +456,6 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     }
 
     return () => {
-      unsubRoot();
       unsubCenterOrder();
       unsubStudentMonth();
     };
@@ -537,7 +488,41 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     };
   }, [isOpen, isPaidSuccess, paymentLinkId, checkoutUrl, orderCode]);
 
+  // 4. Lắng nghe trực tiếp sự kiện postMessage từ cổng thanh toán chính thức pay.payos.vn (hoạt động 100% client-side trên Cloudflare Pages không cần proxy/CORS)
+  useEffect(() => {
+    if (!isOpen || isPaidSuccess || (!paymentLinkId && !checkoutUrl)) return;
+
+    const handlePayOSMessage = (event: MessageEvent) => {
+      if (hasTriggeredPaidSuccessRef.current) return;
+      const parsed = parsePayOSPostMessageEvent(event);
+      if (!parsed.isPayOSEvent) return;
+
+      const matchesOrder =
+        (parsed.orderCode && orderCode && Number(parsed.orderCode) === Number(orderCode)) ||
+        (parsed.paymentLinkId &&
+          paymentLinkId &&
+          parsed.paymentLinkId.toLowerCase() === paymentLinkId.toLowerCase());
+
+      if (parsed.isPaid && (matchesOrder || !parsed.orderCode)) {
+        confirmPaymentSuccess(
+          parsed.orderCode || orderCode || undefined,
+          parsed.paymentLinkId || paymentLinkId
+        );
+      }
+    };
+
+    window.addEventListener('message', handlePayOSMessage);
+    return () => {
+      window.removeEventListener('message', handlePayOSMessage);
+    };
+  }, [isOpen, isPaidSuccess, paymentLinkId, checkoutUrl, orderCode]);
+
   if (!isOpen) return null;
+
+  const payosIframeListenerUrl =
+    !isPaidSuccess && (paymentLinkId || checkoutUrl)
+      ? buildPayOSIframeListenerUrl({ paymentLinkId, checkoutUrl })
+      : '';
 
   const activeMemo = payosTransferMemo || cleanDescription;
   const activeAccountNo = displayAccountNo || effectiveAccountNo;
@@ -815,6 +800,16 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* Iframe ẩn kết nối trực tiếp tới pay.payos.vn để nhận tín hiệu PAID realtime qua postMessage */}
+              {payosIframeListenerUrl && (
+                <iframe
+                  src={payosIframeListenerUrl}
+                  title="PayOS Realtime Status Listener"
+                  className="hidden w-0 h-0 border-0 pointer-events-none"
+                  aria-hidden="true"
+                />
+              )}
 
               {/* Footer Modal */}
               <div className="flex items-center justify-between pt-2 border-t border-slate-100">

@@ -62,6 +62,8 @@ import {
   TuitionPaymentRecord,
   getRealtimeCenterTuitionPayments,
   checkPayOSPaymentStatus,
+  buildPayOSIframeListenerUrl,
+  parsePayOSPostMessageEvent,
   recordStudentTuitionPaymentSuccess,
   normalizeTuitionMonthPair,
 } from '../../services/firebaseService';
@@ -206,22 +208,26 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
     };
   }, [activeCenterId, currentStudent?.centerId]);
 
-  // Tự động kiểm tra các đơn PENDING có paymentLinkId trên PayOS (trong trường hợp phụ huynh đã quét QR nhưng đóng modal hoặc tải lại trang)
-  useEffect(() => {
-    if (!currentStudent?.id || centerTuitionPayments.length === 0) return;
+  // Danh sách các đơn PENDING của học sinh hiện tại có paymentLinkId / checkoutUrl
+  const pendingOrdersForCurrentStudent = useMemo(() => {
+    if (!currentStudent?.id || centerTuitionPayments.length === 0) return [];
     const stId = String(currentStudent.id).trim();
-    const pendingForStudent = centerTuitionPayments.filter(
+    return centerTuitionPayments.filter(
       (p) =>
         p &&
         p.status === 'PENDING' &&
         String(p.studentId || '').trim() === stId &&
         Boolean(p.paymentLinkId || p.checkoutUrl)
     );
-    if (pendingForStudent.length === 0) return;
+  }, [centerTuitionPayments, currentStudent?.id]);
+
+  // Tự động kiểm tra các đơn PENDING có paymentLinkId trên PayOS (trong trường hợp phụ huynh đã quét QR nhưng đóng modal hoặc tải lại trang)
+  useEffect(() => {
+    if (pendingOrdersForCurrentStudent.length === 0) return;
 
     let cancelled = false;
     const verifyPendingOrders = async () => {
-      for (const order of pendingForStudent) {
+      for (const order of pendingOrdersForCurrentStudent) {
         if (cancelled) return;
         const res = await checkPayOSPaymentStatus({
           paymentLinkId: order.paymentLinkId,
@@ -257,7 +263,53 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [centerTuitionPayments, currentStudent?.id, activeCenterId, centerName]);
+  }, [pendingOrdersForCurrentStudent, currentStudent, activeCenterId, centerName]);
+
+  // Lắng nghe sự kiện postMessage từ iframe pay.payos.vn cho các đơn PENDING của học sinh (hoạt động 100% client-side trên Cloudflare Pages)
+  useEffect(() => {
+    if (pendingOrdersForCurrentStudent.length === 0) return;
+
+    const handlePayOSMessage = async (event: MessageEvent) => {
+      const parsed = parsePayOSPostMessageEvent(event);
+      if (!parsed.isPayOSEvent || !parsed.isPaid) return;
+
+      const matchedOrder = pendingOrdersForCurrentStudent.find(
+        (o) =>
+          (parsed.orderCode && Number(o.orderCode) === Number(parsed.orderCode)) ||
+          (parsed.paymentLinkId &&
+            o.paymentLinkId &&
+            o.paymentLinkId.toLowerCase() === parsed.paymentLinkId.toLowerCase())
+      );
+
+      if (matchedOrder) {
+        await recordStudentTuitionPaymentSuccess({
+          orderCode: matchedOrder.orderCode,
+          paymentLinkId: matchedOrder.paymentLinkId || parsed.paymentLinkId,
+          centerId:
+            matchedOrder.centerId || (activeCenterId || currentStudent.centerId || 'HG01').trim(),
+          centerName: matchedOrder.centerName || centerName,
+          studentId: matchedOrder.studentId,
+          studentName: matchedOrder.studentName || currentStudent.name,
+          classId: matchedOrder.classId || currentStudent.classId,
+          className: matchedOrder.className || currentStudent.className,
+          month: matchedOrder.displayMonth || matchedOrder.month,
+          attendedSessions: matchedOrder.attendedSessions,
+          amount: matchedOrder.amount,
+          description: matchedOrder.description,
+        });
+        setPaidMonthsMap((prev) => ({
+          ...prev,
+          [matchedOrder.displayMonth]: true,
+          [matchedOrder.isoMonth]: true,
+        }));
+      }
+    };
+
+    window.addEventListener('message', handlePayOSMessage);
+    return () => {
+      window.removeEventListener('message', handlePayOSMessage);
+    };
+  }, [pendingOrdersForCurrentStudent, currentStudent, activeCenterId, centerName]);
 
   // Lắng nghe thông tin Thiết lập thanh toán (BankId, Số TK, Tên chủ thẻ) từ center_admin trên Firebase
   useEffect(() => {
@@ -2927,6 +2979,25 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
         onClose={() => setIsPreviewOpen(false)}
         document={previewDoc}
       />
+
+      {/* Iframe ẩn đồng bộ trạng thái đơn PENDING của học sinh trực tiếp từ pay.payos.vn */}
+      {!isTuitionModalOpen &&
+        pendingOrdersForCurrentStudent.slice(0, 3).map((order) => {
+          const url = buildPayOSIframeListenerUrl({
+            paymentLinkId: order.paymentLinkId,
+            checkoutUrl: order.checkoutUrl,
+          });
+          if (!url) return null;
+          return (
+            <iframe
+              key={`payos-sync-${order.orderCode}`}
+              src={url}
+              title={`PayOS Sync ${order.orderCode}`}
+              className="hidden w-0 h-0 border-0 pointer-events-none"
+              aria-hidden="true"
+            />
+          );
+        })}
     </div>
   );
 };

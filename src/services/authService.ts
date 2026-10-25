@@ -491,7 +491,13 @@ export async function loginCenterUserByUsername(
 
     const resolvedFullName =
       profileData.fullName || profileData.displayName || profileData.name || cleanUsername;
-    const resolvedRole = ((profileData.role as UserProfileRole) || 'teacher') as SystemRole & UserProfileRole;
+    const isDetectedCenterAdmin =
+      String(profileData.userRole || '').toLowerCase().trim() === 'center_admin' ||
+      String(profileData.role || '').toLowerCase().trim() === 'center_admin' ||
+      String(resolvedFullName).trim().toLowerCase().startsWith('quản trị viên');
+    const resolvedRole = (
+      isDetectedCenterAdmin ? 'center_admin' : (profileData.role as UserProfileRole) || 'teacher'
+    ) as SystemRole & UserProfileRole;
 
     const userProfileResult: UserProfile & UserAccount = {
       id: uid,
@@ -601,6 +607,80 @@ export function getValidTeacherName(...candidates: (string | undefined | null)[]
     return trimmed;
   }
   return '';
+}
+
+/**
+ * Xác định chính xác vai trò (role) của tài khoản, đặc biệt bảo vệ tài khoản `center_admin`
+ * không bao giờ bị nhận nhầm thành `teacher` dù trường `role` cũ bị ghi đè.
+ */
+export function resolveAccurateUserRole(
+  data: any,
+  centerData?: any,
+  usernameDocData?: any,
+  fallbackUsername?: string
+): SystemRole {
+  const cleanUser = String(
+    data?.username || usernameDocData?.username || fallbackUsername || ''
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '');
+
+  if (cleanUser === 'admin' || data?.role === 'super_admin' || data?.userRole === 'super_admin') {
+    if (cleanUser === 'admin') return 'super_admin';
+  }
+
+  const uid = String(data?.uid || data?.id || usernameDocData?.uid || '').trim();
+  const rawRole = String(data?.role || '').trim().toLowerCase();
+  const rawUserRole = String(data?.userRole || '').trim().toLowerCase();
+  const rawUsernameRole = String(usernameDocData?.role || '').trim().toLowerCase();
+  const fullNameLower = String(data?.fullName || data?.displayName || data?.name || '')
+    .trim()
+    .toLowerCase();
+
+  const isCenterOwnerByCenterDoc =
+    Boolean(centerData) &&
+    ((uid && (centerData.adminUid === uid || centerData.ownerUid === uid)) ||
+      (cleanUser &&
+        ((centerData.adminUsername &&
+          String(centerData.adminUsername).trim().toLowerCase().replace(/^@+/, '') === cleanUser) ||
+          (centerData.username &&
+            String(centerData.username).trim().toLowerCase().replace(/^@+/, '') === cleanUser))));
+
+  if (
+    rawUserRole === 'center_admin' ||
+    rawRole === 'center_admin' ||
+    rawUsernameRole === 'center_admin' ||
+    isCenterOwnerByCenterDoc ||
+    (fullNameLower.startsWith('quản trị viên') && cleanUser !== 'admin') ||
+    (fullNameLower.startsWith('quan tri vien') && cleanUser !== 'admin')
+  ) {
+    return 'center_admin';
+  }
+
+  if (
+    rawRole === 'parent' ||
+    rawRole === 'parents' ||
+    rawRole === 'student' ||
+    rawRole === 'students' ||
+    rawRole === 'phuhuynh' ||
+    rawUserRole === 'parent' ||
+    rawUsernameRole === 'parent'
+  ) {
+    return 'parent';
+  }
+
+  if (
+    rawRole === 'teacher' ||
+    rawRole === 'teachers' ||
+    rawRole === 'giaovien' ||
+    rawUserRole === 'teacher' ||
+    rawUsernameRole === 'teacher'
+  ) {
+    return 'teacher';
+  }
+
+  return (data?.role as SystemRole) || 'center_admin';
 }
 
 /**
@@ -1016,13 +1096,22 @@ export async function loginUser(
           foundInUsernames = true;
         }
 
-        // Tự động nạp thông tin chi tiết người dùng/giáo viên ngay lập tức
-        if (uData.uid) {
+        const isUsernameCenterAdmin =
+          String(uData.role || '').toLowerCase().trim() === 'center_admin';
+
+        // Tự động nạp thông tin chi tiết người dùng/giáo viên ngay lập tức (chỉ khi không phải center_admin)
+        if (uData.uid && !isUsernameCenterAdmin) {
           try {
             const uUserSnap = await getDoc(doc(db, 'users', uData.uid));
             if (uUserSnap.exists()) {
               const uUser = uUserSnap.data();
-              if (uUser.role === 'teacher') {
+              if (
+                uUser.role === 'teacher' &&
+                uUser.userRole !== 'center_admin' &&
+                !String(uUser.name || uUser.displayName || '')
+                  .toLowerCase()
+                  .startsWith('quản trị viên')
+              ) {
                 matchedTeacher = { id: uData.uid, ...uUser };
               }
             }
@@ -1032,7 +1121,13 @@ export async function loginUser(
               const cUserSnap = await getDoc(doc(db, 'centers', targetCenterId, 'users', uData.uid));
               if (cUserSnap.exists()) {
                 const cUserData = cUserSnap.data();
-                if (cUserData.role === 'teacher') {
+                if (
+                  cUserData.role === 'teacher' &&
+                  cUserData.userRole !== 'center_admin' &&
+                  !String(cUserData.name || cUserData.displayName || '')
+                    .toLowerCase()
+                    .startsWith('quản trị viên')
+                ) {
                   matchedTeacher = { id: uData.uid, ...matchedTeacher, ...cUserData };
                 }
               }
@@ -1308,11 +1403,56 @@ export async function loginUser(
   }
 
   const centerId = (rootDocData?.centerId || targetCenterId || '').trim();
-  const rawRoleStr = String(rootDocData?.role || '').toLowerCase().trim();
-  const isTeacher = rawRoleStr === 'teacher' || rawRoleStr === 'teachers' || rawRoleStr === 'giaovien' || !!matchedTeacher;
-  const isParent = rawRoleStr === 'parent' || rawRoleStr === 'parents' || rawRoleStr === 'phuhuynh' || !!matchedStudent;
   const resolvedUsername = rootDocData?.username || normalizeUsername(rawUsername);
-  let role: SystemRole = isTeacher ? 'teacher' : isParent ? 'parent' : (rootDocData?.role as SystemRole) || 'center_admin';
+
+  // Kiểm tra thêm từ document trung tâm `/centers/{centerId}` và `/usernames/{resolvedUsername}` để xác thực chính xác Center Admin
+  let centerDocForRole: any = matchedCenter || null;
+  let usernameDocForRole: any = null;
+  if (centerId && !centerDocForRole) {
+    try {
+      const cSnap = await getDoc(doc(db, 'centers', centerId));
+      if (cSnap.exists()) {
+        centerDocForRole = { id: cSnap.id, ...cSnap.data() };
+      }
+    } catch {}
+  }
+  if (resolvedUsername) {
+    try {
+      const unSnap = await getDoc(doc(db, 'usernames', resolvedUsername));
+      if (unSnap.exists()) {
+        usernameDocForRole = unSnap.data();
+      }
+    } catch {}
+  }
+
+  const detectedAccurateRole = resolveAccurateUserRole(
+    { ...rootDocData, uid: finalUid, username: resolvedUsername },
+    centerDocForRole,
+    usernameDocForRole,
+    resolvedUsername
+  );
+
+  const isConfirmedCenterAdmin = detectedAccurateRole === 'center_admin';
+  if (isConfirmedCenterAdmin) {
+    matchedTeacher = null;
+    matchedStudent = null;
+  }
+
+  const rawRoleStr = String(rootDocData?.role || '').toLowerCase().trim();
+  const isTeacher =
+    !isConfirmedCenterAdmin &&
+    (rawRoleStr === 'teacher' || rawRoleStr === 'teachers' || rawRoleStr === 'giaovien' || !!matchedTeacher);
+  const isParent =
+    !isConfirmedCenterAdmin &&
+    (rawRoleStr === 'parent' || rawRoleStr === 'parents' || rawRoleStr === 'phuhuynh' || !!matchedStudent);
+
+  let role: SystemRole = isConfirmedCenterAdmin
+    ? 'center_admin'
+    : isTeacher
+    ? 'teacher'
+    : isParent
+    ? 'parent'
+    : (rootDocData?.role as SystemRole) || 'center_admin';
   if (((role as string) === 'admin' || role === 'super_admin') && resolvedUsername !== 'admin') {
     role = 'center_admin';
   }
@@ -1331,10 +1471,10 @@ export async function loginUser(
   }
 
   // Tự động ghi nhận/cập nhật đầy đủ vào Root Collection `/users/${user.uid}` nếu chưa tồn tại
-  // HOẶC nếu vai trò là giáo viên nhưng doc chưa chuẩn hóa role: 'teacher' (ví dụ doc đang lưu role: 'teachers')
+  // HOẶC nếu role trên Firestore bị sai lệch so với vai trò thực tế (ví dụ center_admin bị ghi nhầm thành teacher)
   try {
-    const isDocMissingRole = !rootDocData || (isTeacher && rootDocData?.role !== 'teacher');
-    if (isDocMissingRole) {
+    const isDocMissingOrMismatchedRole = !rootDocData || rootDocData?.role !== role || rootDocData?.userRole !== role;
+    if (isDocMissingOrMismatchedRole) {
       await setDoc(
         doc(db, 'users', finalUid),
         {
@@ -1385,6 +1525,7 @@ export async function loginUser(
           email: emailToAuth,
           fullName: detailData.fullName || detailData.name || displayName,
           role: role,
+          userRole: role,
           status: 'active',
           updatedAt: serverTimestamp(),
         },
@@ -1394,15 +1535,19 @@ export async function loginUser(
 
     // Bổ sung tên trung tâm từ Center Document nếu cần
     try {
-      const centerSnap = await getDoc(doc(db, 'centers', centerId));
-      if (centerSnap.exists()) {
-        const cData = centerSnap.data();
-        detailData.centerName = detailData.centerName || cData.name;
+      if (centerDocForRole) {
+        detailData.centerName = detailData.centerName || centerDocForRole.name;
+      } else {
+        const centerSnap = await getDoc(doc(db, 'centers', centerId));
+        if (centerSnap.exists()) {
+          const cData = centerSnap.data();
+          detailData.centerName = detailData.centerName || cData.name;
+        }
       }
     } catch {}
   }
 
-  if (matchedTeacher) {
+  if (matchedTeacher && !isConfirmedCenterAdmin) {
     detailData = { ...matchedTeacher, ...detailData };
   }
 
@@ -2014,7 +2159,7 @@ export function listenToCenterUsers(
           snap.docs.forEach((docSnap) => {
             const u = docSnap.data();
             const id = docSnap.id || u.id;
-            const role = (u.role as SystemRole) || 'teacher';
+            const role = resolveAccurateUserRole({ ...u, id, uid: id });
             const resolvedUName = role === 'teacher'
               ? (getValidTeacherName(u.fullName, u.name, u.displayName) || u.fullName || u.name || 'Giáo viên')
               : (u.fullName || u.name || u.displayName || 'Người dùng');
@@ -2079,7 +2224,7 @@ export function listenToCenterUsers(
 
           const isMatchingCenter = targetCenterId ? (data.centerId === targetCenterId) : true;
           if (isMatchingCenter) {
-            const role = (data.role as SystemRole) || 'teacher';
+            const role = resolveAccurateUserRole({ ...data, id: d.id, uid: data.uid || d.id });
             const resolvedRName = role === 'teacher'
               ? (getValidTeacherName(data.fullName, data.name, data.displayName) || data.fullName || data.name || data.displayName || 'Giáo viên')
               : (data.fullName || data.name || data.displayName || 'Người dùng');
@@ -2153,9 +2298,42 @@ export function listenToCurrentUserProfile(
       const data = snapshot.data();
       const targetCenter = data.centerId || centerId;
 
-      // Đọc bổ sung từ subcollection giáo viên nếu có để lấy đủ name, subject, phone
-      let teacherExtra: any = {};
+      let centerData: any = null;
       if (targetCenter) {
+        try {
+          const cDoc = await getDoc(doc(db, 'centers', targetCenter));
+          if (cDoc.exists()) {
+            centerData = cDoc.data();
+          }
+        } catch {}
+      }
+
+      const accurateRole = resolveAccurateUserRole(
+        { ...data, id: snapshot.id, uid: data.uid || snapshot.id },
+        centerData
+      );
+
+      // Nếu phát hiện tài khoản center_admin bị lưu sai role trên Firestore, tự động khôi phục ngay
+      if (accurateRole === 'center_admin' && data.role !== 'center_admin') {
+        try {
+          await setDoc(
+            doc(db, 'users', uid),
+            { role: 'center_admin', userRole: 'center_admin' },
+            { merge: true }
+          );
+          if (targetCenter) {
+            await setDoc(
+              doc(db, 'centers', targetCenter, 'users', uid),
+              { role: 'center_admin', userRole: 'center_admin' },
+              { merge: true }
+            );
+          }
+        } catch {}
+      }
+
+      // Đọc bổ sung từ subcollection giáo viên nếu thật sự là giáo viên
+      let teacherExtra: any = {};
+      if (targetCenter && accurateRole === 'teacher') {
         try {
           const tDoc = await getDoc(doc(db, 'centers', targetCenter, 'teachers', uid));
           if (tDoc.exists()) {
@@ -2164,23 +2342,26 @@ export function listenToCurrentUserProfile(
         } catch {}
       }
 
-      const resolvedName = getValidTeacherName(
-        teacherExtra.fullName,
-        teacherExtra.name,
-        teacherExtra.displayName,
-        data.fullName,
-        data.name,
-        data.displayName
-      ) || data.displayName || data.fullName || data.name || teacherExtra.fullName || teacherExtra.name || 'Giáo Viên';
+      const resolvedName =
+        accurateRole === 'center_admin'
+          ? data.displayName || data.fullName || data.name || (centerData?.name ? `Quản trị viên - ${centerData.name}` : 'Quản trị viên')
+          : getValidTeacherName(
+              teacherExtra.fullName,
+              teacherExtra.name,
+              teacherExtra.displayName,
+              data.fullName,
+              data.name,
+              data.displayName
+            ) || data.displayName || data.fullName || data.name || teacherExtra.fullName || teacherExtra.name || 'Giáo Viên';
 
       const updatedUser: UserAccount = {
         id: snapshot.id,
         uid: data.uid || snapshot.id,
         username: data.username || teacherExtra.username || snapshot.id,
         password: data.password || teacherExtra.password || '••••••',
-        role: (data.role as SystemRole) || (teacherExtra.role as SystemRole) || 'teacher',
+        role: accurateRole,
         centerId: targetCenter,
-        centerName: data.centerName || teacherExtra.centerName || '',
+        centerName: data.centerName || centerData?.name || teacherExtra.centerName || '',
         name: resolvedName,
         fullName: resolvedName,
         displayName: resolvedName,
@@ -2602,7 +2783,17 @@ export function getStoredSession(): UserAccount | null {
   try {
     const raw = localStorage.getItem(STORAGE_SESSION_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as UserAccount;
+    const parsed = JSON.parse(raw) as UserAccount;
+    if (parsed && typeof parsed === 'object') {
+      const accurateRole = resolveAccurateUserRole(parsed);
+      if (accurateRole !== parsed.role) {
+        parsed.role = accurateRole;
+        try {
+          localStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(parsed));
+        } catch {}
+      }
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -2610,6 +2801,12 @@ export function getStoredSession(): UserAccount | null {
 
 export function setStoredSession(user: UserAccount): void {
   try {
+    if (user && typeof user === 'object') {
+      const accurateRole = resolveAccurateUserRole(user);
+      const normalized = accurateRole !== user.role ? { ...user, role: accurateRole } : user;
+      localStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(normalized));
+      return;
+    }
     localStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(user));
   } catch {}
 }

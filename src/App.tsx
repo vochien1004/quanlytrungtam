@@ -199,7 +199,7 @@ export default function App() {
     ensureDefaultAccountsInFirestore().catch(() => {});
   }, []);
 
-  // 1. Listen to Root Collection `/centers` & Ensure Super Admin access
+  // 1. Listen to Root Collection `/centers` & Ensure Super Admin / Center Admin access
   useEffect(() => {
     const unsubCenters = getRealtimeCenters((realtimeCenters) => {
       setCenters(realtimeCenters);
@@ -208,19 +208,44 @@ export default function App() {
       } else if (currentUser?.role === 'super_admin' && realtimeCenters.length > 0 && (!activeCenterId || !realtimeCenters.some((c) => c.id === activeCenterId))) {
         setActiveCenterId(realtimeCenters[0].id);
       }
+
+      // Kiểm tra đối chiếu nếu tài khoản đang đăng nhập chính là Chủ cơ sở / Quản trị viên của trung tâm
+      if (currentUser && currentUser.role !== 'super_admin') {
+        const cleanU = String(currentUser.username || '').trim().toLowerCase().replace(/^@+/, '');
+        const uUid = String(currentUser.uid || currentUser.id || '').trim();
+        const ownedCenter = realtimeCenters.find(
+          (c) =>
+            (uUid && (c.adminUid === uUid || c.ownerUid === uUid)) ||
+            (cleanU &&
+              ((c.adminUsername && String(c.adminUsername).trim().toLowerCase().replace(/^@+/, '') === cleanU) ||
+                (c.code && String(c.code).trim().toLowerCase() === cleanU)))
+        );
+        if (ownedCenter && currentUser.role !== 'center_admin') {
+          const healedUser: UserAccount = {
+            ...currentUser,
+            role: 'center_admin',
+            centerId: currentUser.centerId || ownedCenter.id,
+            centerName: currentUser.centerName || ownedCenter.name,
+          };
+          setCurrentUser(healedUser);
+          setStoredSession(healedUser);
+          setCurrentRole('admin');
+          setActiveNav('dashboard');
+        }
+      }
     });
 
     return () => {
       if (unsubCenters) unsubCenters();
     };
-  }, [currentUser?.centerId, currentUser?.role]);
+  }, [currentUser?.centerId, currentUser?.role, currentUser?.uid, currentUser?.username]);
 
-  // 1.5. Lắng nghe Realtime hồ sơ chi tiết của người dùng đang đăng nhập tại `/centers/{centerId}/users/{uid}`
+  // 1.5. Lắng nghe Realtime hồ sơ chi tiết của người dùng đang đăng nhập tại `/users/{uid}`
   useEffect(() => {
-    if (!currentUser?.uid || !currentUser?.centerId) return;
+    if (!currentUser?.uid) return;
 
     const unsubProfile = listenToCurrentUserProfile(
-      currentUser.centerId,
+      currentUser.centerId || '',
       currentUser.uid,
       (updatedProfile) => {
         if (!updatedProfile) return;
@@ -232,15 +257,20 @@ export default function App() {
           return;
         }
 
-        // Cập nhật thông tin mới nhất vào session state
+        // Cập nhật thông tin mới nhất vào session state & đồng bộ tức thì currentRole
         setCurrentUser((prev) => {
-          if (!prev) return updatedProfile;
-          return {
-            ...prev,
-            ...updatedProfile,
-          };
+          const merged = prev ? { ...prev, ...updatedProfile } : updatedProfile;
+          setStoredSession(merged);
+          return merged;
         });
-        setStoredSession(updatedProfile);
+
+        if (updatedProfile.role === 'super_admin' || updatedProfile.role === 'center_admin') {
+          setCurrentRole('admin');
+        } else if (isTeacherRole(updatedProfile.role)) {
+          setCurrentRole('teacher');
+        } else if (isParentRole(updatedProfile.role)) {
+          setCurrentRole('parent');
+        }
       }
     );
 
