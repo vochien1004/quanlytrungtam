@@ -12,9 +12,11 @@ import {
   X,
   ShieldCheck,
   Sparkles,
+  Smartphone,
+  AlertCircle,
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import {
   ensureAuthSession,
@@ -28,6 +30,74 @@ import {
 
 const PAYOS_CREATE_PAYMENT_ENDPOINT =
   'https://payos-hocphi-webhook.vochien1004.workers.dev/create-payment';
+
+interface BankDeepLinkItem {
+  id: string;
+  name: string;
+  logo: string;
+  scheme: string;
+}
+
+const SUPPORTED_BANK_APPS: BankDeepLinkItem[] = [
+  {
+    id: 'MB',
+    name: 'MBBank',
+    logo: 'https://api.vietqr.io/img/MB.png',
+    scheme: 'mbmobile://',
+  },
+  {
+    id: 'VCB',
+    name: 'Vietcombank',
+    logo: 'https://api.vietqr.io/img/VCB.png',
+    scheme: 'vcb://',
+  },
+  {
+    id: 'AGB',
+    name: 'Agribank',
+    logo: 'https://api.vietqr.io/img/AGB.png',
+    scheme: 'agribankemobile://',
+  },
+  {
+    id: 'TCB',
+    name: 'Techcombank',
+    logo: 'https://api.vietqr.io/img/TCB.png',
+    scheme: 'tcbmobile://',
+  },
+  {
+    id: 'BIDV',
+    name: 'BIDV',
+    logo: 'https://api.vietqr.io/img/BIDV.png',
+    scheme: 'bidvsmartbanking://',
+  },
+  {
+    id: 'VPB',
+    name: 'VPBank',
+    logo: 'https://api.vietqr.io/img/VPB.png',
+    scheme: 'vpbankneo://',
+  },
+  {
+    id: 'TPB',
+    name: 'TPBank',
+    logo: 'https://api.vietqr.io/img/TPB.png',
+    scheme: 'tpbankmobile://',
+  },
+];
+
+function detectIsMobileOrTabletDevice(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return false;
+  }
+  const ua = navigator.userAgent || navigator.vendor || (window as any).opera || '';
+  const isMobileUa =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(ua);
+  const isIpadOs =
+    navigator.platform === 'MacIntel' && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+  const isSmallTouchViewport =
+    window.innerWidth <= 1024 &&
+    (window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window || window.innerWidth < 768);
+
+  return isMobileUa || isIpadOs || isSmallTouchViewport;
+}
 
 export interface TuitionPaymentModalProps {
   isOpen: boolean;
@@ -157,6 +227,23 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
   const [displayAccountNo, setDisplayAccountNo] = useState<string>('');
   const [displayAccountName, setDisplayAccountName] = useState<string>('');
   const [copiedField, setCopiedField] = useState<'memo' | 'account' | null>(null);
+  const [isMobileOrTablet, setIsMobileOrTablet] = useState<boolean>(() =>
+    detectIsMobileOrTabletDevice()
+  );
+  const [bankAppFallbackNotice, setBankAppFallbackNotice] = useState<string | null>(null);
+  const [failedBankLogos, setFailedBankLogos] = useState<Record<string, boolean>>({});
+  const deepLinkTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const updateDeviceType = () => {
+      setIsMobileOrTablet(detectIsMobileOrTabletDevice());
+    };
+    updateDeviceType();
+    window.addEventListener('resize', updateDeviceType);
+    return () => {
+      window.removeEventListener('resize', updateDeviceType);
+    };
+  }, []);
 
   const effectiveCenterId = (centerId || 'HG01').trim();
   const effectiveBankId = (bankId || 'MB').trim().toUpperCase();
@@ -225,6 +312,11 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       setRawEmvQrString('');
       setPayosTransferMemo('');
       setCopiedField(null);
+      setBankAppFallbackNotice(null);
+      if (deepLinkTimeoutRef.current) {
+        window.clearTimeout(deepLinkTimeoutRef.current);
+        deepLinkTimeoutRef.current = null;
+      }
       return;
     }
 
@@ -536,7 +628,71 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     } catch {}
   };
 
+  const handleOpenBankApp = (bank: BankDeepLinkItem) => {
+    setBankAppFallbackNotice(null);
+    if (deepLinkTimeoutRef.current) {
+      window.clearTimeout(deepLinkTimeoutRef.current);
+      deepLinkTimeoutRef.current = null;
+    }
+
+    const qrPayload = (rawEmvQrString || cleanDescription || '').trim();
+    const deepLinkUrl = `${bank.scheme}qr?data=${encodeURIComponent(qrPayload)}`;
+
+    let didLeaveBrowser = false;
+    const handleVisibilityOrBlur = () => {
+      if (document.hidden || document.visibilityState === 'hidden') {
+        didLeaveBrowser = true;
+        if (deepLinkTimeoutRef.current) {
+          window.clearTimeout(deepLinkTimeoutRef.current);
+          deepLinkTimeoutRef.current = null;
+        }
+      }
+    };
+
+    const handlePageBlur = () => {
+      didLeaveBrowser = true;
+      if (deepLinkTimeoutRef.current) {
+        window.clearTimeout(deepLinkTimeoutRef.current);
+        deepLinkTimeoutRef.current = null;
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrBlur);
+    window.addEventListener('pagehide', handlePageBlur);
+    window.addEventListener('blur', handlePageBlur);
+
+    const cleanupListeners = () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrBlur);
+      window.removeEventListener('pagehide', handlePageBlur);
+      window.removeEventListener('blur', handlePageBlur);
+    };
+
+    // Cơ chế Fallback an toàn sau 1.8 giây nếu trình duyệt không chuyển hướng sang ứng dụng ngân hàng
+    deepLinkTimeoutRef.current = window.setTimeout(() => {
+      cleanupListeners();
+      deepLinkTimeoutRef.current = null;
+      if (!didLeaveBrowser && !document.hidden && document.visibilityState !== 'hidden') {
+        setBankAppFallbackNotice('Ứng dụng ngân hàng chưa được cài đặt');
+      }
+    }, 1800);
+
+    try {
+      window.location.href = deepLinkUrl;
+    } catch {
+      cleanupListeners();
+      if (deepLinkTimeoutRef.current) {
+        window.clearTimeout(deepLinkTimeoutRef.current);
+        deepLinkTimeoutRef.current = null;
+      }
+      setBankAppFallbackNotice('Ứng dụng ngân hàng chưa được cài đặt');
+    }
+  };
+
   const handleCloseModal = () => {
+    if (deepLinkTimeoutRef.current) {
+      window.clearTimeout(deepLinkTimeoutRef.current);
+      deepLinkTimeoutRef.current = null;
+    }
     if (isPaidSuccess && onPaymentSuccess && orderCode) {
       onPaymentSuccess(orderCode);
     }
@@ -733,6 +889,81 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
                   </>
                 )}
               </div>
+
+              {/* Khu vực Mở ứng dụng ngân hàng (Mobile/Tablet) hoặc Gợi ý quét mã (Desktop/Laptop) ngay dưới thẻ mã QR */}
+              {!isConnectingPayOS && (
+                <div className="rounded-2xl bg-white border border-slate-200 p-3.5 sm:p-4 shadow-2xs space-y-2.5">
+                  {isMobileOrTablet ? (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#0B486B]">
+                          <Smartphone className="w-4 h-4 text-[#0072B5] shrink-0" />
+                          <span>Mở ứng dụng ngân hàng để thanh toán nhanh</span>
+                        </div>
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          Chạm để mở app
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                        {SUPPORTED_BANK_APPS.map((bank) => (
+                          <button
+                            key={bank.id}
+                            type="button"
+                            onClick={() => handleOpenBankApp(bank)}
+                            className="flex flex-col items-center justify-center p-2.5 rounded-xl border border-slate-200 bg-white hover:border-[#0072B5]/50 hover:bg-blue-50/40 active:scale-95 active:bg-blue-50 transition-all cursor-pointer min-h-[68px]"
+                          >
+                            <div className="h-7 w-full flex items-center justify-center mb-1">
+                              {failedBankLogos[bank.id] ? (
+                                <span className="text-xs font-black text-[#0072B5]">
+                                  {bank.id}
+                                </span>
+                              ) : (
+                                <img
+                                  src={bank.logo}
+                                  alt={bank.name}
+                                  referrerPolicy="no-referrer"
+                                  className="h-6 w-auto max-w-[76px] object-contain mx-auto"
+                                  onError={() =>
+                                    setFailedBankLogos((prev) => ({
+                                      ...prev,
+                                      [bank.id]: true,
+                                    }))
+                                  }
+                                />
+                              )}
+                            </div>
+                            <span className="text-[11px] font-bold text-slate-700 text-center leading-tight truncate w-full">
+                              {bank.name}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {bankAppFallbackNotice && (
+                        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold animate-fade-in">
+                          <div className="flex items-center gap-1.5">
+                            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>{bankAppFallbackNotice}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setBankAppFallbackNotice(null)}
+                            className="text-[11px] font-extrabold text-amber-700 hover:text-amber-950 cursor-pointer shrink-0"
+                          >
+                            Đóng
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex items-center justify-center gap-2 text-xs font-semibold text-slate-600 text-center py-0.5">
+                      <Smartphone className="w-4 h-4 text-[#0072B5] shrink-0" />
+                      <span>Mở ứng dụng ngân hàng trên điện thoại để quét mã QR ở trên</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Khung thông tin Số tài khoản & Nội dung chuyển khoản chuẩn payOS có nút Sao chép 1 chạm */}
               <div className="space-y-3 text-xs">
