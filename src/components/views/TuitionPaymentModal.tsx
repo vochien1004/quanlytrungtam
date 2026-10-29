@@ -13,7 +13,6 @@ import {
   ShieldCheck,
   Sparkles,
   Smartphone,
-  AlertCircle,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -33,55 +32,167 @@ const PAYOS_CREATE_PAYMENT_ENDPOINT =
 
 interface BankDeepLinkItem {
   id: string;
+  appId: string;
   name: string;
   logo: string;
   scheme: string;
+  autofill?: boolean;
 }
 
 const SUPPORTED_BANK_APPS: BankDeepLinkItem[] = [
   {
     id: 'MB',
+    appId: 'mb',
     name: 'MBBank',
     logo: 'https://api.vietqr.io/img/MB.png',
-    scheme: 'mbmobile://',
+    scheme: 'mbbank://',
+    autofill: true,
   },
   {
     id: 'VCB',
+    appId: 'vcb',
     name: 'Vietcombank',
     logo: 'https://api.vietqr.io/img/VCB.png',
-    scheme: 'vcb://',
+    scheme: 'vietcombankmobile://',
+    autofill: false,
   },
   {
     id: 'AGB',
+    appId: 'vba',
     name: 'Agribank',
-    logo: 'https://api.vietqr.io/img/AGB.png',
-    scheme: 'agribankemobile://',
+    logo: 'https://api.vietqr.io/img/VBA.png',
+    scheme: 'agribankmobile://',
+    autofill: false,
   },
   {
     id: 'TCB',
+    appId: 'tcb',
     name: 'Techcombank',
     logo: 'https://api.vietqr.io/img/TCB.png',
-    scheme: 'tcbmobile://',
+    scheme: 'tcb://',
+    autofill: false,
   },
   {
     id: 'BIDV',
+    appId: 'bidv',
     name: 'BIDV',
     logo: 'https://api.vietqr.io/img/BIDV.png',
-    scheme: 'bidvsmartbanking://',
+    scheme: 'bidv.smartbanking.partner://',
+    autofill: true,
   },
   {
     id: 'VPB',
+    appId: 'vpb',
     name: 'VPBank',
     logo: 'https://api.vietqr.io/img/VPB.png',
     scheme: 'vpbankneo://',
+    autofill: false,
   },
   {
     id: 'TPB',
+    appId: 'tpb',
     name: 'TPBank',
     logo: 'https://api.vietqr.io/img/TPB.png',
-    scheme: 'tpbankmobile://',
+    scheme: 'hydro://',
+    autofill: false,
+  },
+  {
+    id: 'ICB',
+    appId: 'icb',
+    name: 'VietinBank',
+    logo: 'https://api.vietqr.io/img/ICB.png',
+    scheme: 'vietinbankipay://',
+    autofill: true,
   },
 ];
+
+const BIN_TO_VIETQR_BANK_CODE: Record<string, string> = {
+  '970422': 'mb',
+  '970436': 'vcb',
+  '970405': 'vba',
+  '970407': 'tcb',
+  '970418': 'bidv',
+  '970432': 'vpb',
+  '970423': 'tpb',
+  '970415': 'icb',
+  '970416': 'acb',
+  '970448': 'ocb',
+  '970441': 'vib',
+  '970443': 'shb',
+  '970403': 'stb',
+  '970426': 'msb',
+  '970437': 'hdb',
+};
+
+function resolveVietQrBankCode(binOrBankId?: string, fallbackBankId?: string): string {
+  const raw = String(binOrBankId || fallbackBankId || 'MB').trim().toUpperCase();
+  if (BIN_TO_VIETQR_BANK_CODE[raw]) {
+    return BIN_TO_VIETQR_BANK_CODE[raw];
+  }
+  const aliasMap: Record<string, string> = {
+    MB: 'mb',
+    MBBANK: 'mb',
+    VCB: 'vcb',
+    VIETCOMBANK: 'vcb',
+    AGB: 'vba',
+    VBA: 'vba',
+    AGRIBANK: 'vba',
+    TCB: 'tcb',
+    TECHCOMBANK: 'tcb',
+    BIDV: 'bidv',
+    VPB: 'vpb',
+    VPBANK: 'vpb',
+    TPB: 'tpb',
+    TPBANK: 'tpb',
+    ICB: 'icb',
+    CTG: 'icb',
+    VIETINBANK: 'icb',
+    ACB: 'acb',
+    OCB: 'ocb',
+    VIB: 'vib',
+    SHB: 'shb',
+    STB: 'stb',
+    SACOMBANK: 'stb',
+  };
+  if (aliasMap[raw]) {
+    return aliasMap[raw];
+  }
+  if (fallbackBankId) {
+    const fb = String(fallbackBankId).trim().toUpperCase();
+    if (BIN_TO_VIETQR_BANK_CODE[fb]) return BIN_TO_VIETQR_BANK_CODE[fb];
+    if (aliasMap[fb]) return aliasMap[fb];
+  }
+  return raw.toLowerCase();
+}
+
+/**
+ * Tạo đường dẫn Deep Link chuẩn VietQR / PayOS (`https://dl.vietqr.io/pay`)
+ * giúp mở trực tiếp App Ngân hàng trên iOS & Android và tự động điền thông tin chuyển khoản (STK, Số tiền, Nội dung)
+ */
+function buildVietQrDeepLinkUrl(params: {
+  appId: string;
+  accountNo: string;
+  bankCode: string;
+  accountName: string;
+  amount: number;
+  memo: string;
+}): string {
+  const cleanAcc = String(params.accountNo || '').trim();
+  const cleanBank = resolveVietQrBankCode(params.bankCode);
+  const cleanName = String(params.accountName || '').trim();
+  const cleanAmount = Math.max(0, Math.round(Number(params.amount) || 0));
+  const cleanMemo = String(params.memo || '').trim();
+  const redirectUrl = typeof window !== 'undefined' ? window.location.href : '';
+
+  return (
+    `https://dl.vietqr.io/pay?app=${encodeURIComponent(params.appId.trim().toLowerCase())}` +
+    `&ba=${encodeURIComponent(cleanAcc)}@${encodeURIComponent(cleanBank)}` +
+    `&bn=${encodeURIComponent(cleanName)}` +
+    `&am=${encodeURIComponent(String(cleanAmount))}` +
+    `&tn=${encodeURIComponent(cleanMemo)}` +
+    (redirectUrl ? `&redirect_url=${encodeURIComponent(redirectUrl)}` : '')
+  );
+}
 
 function detectIsMobileOrTabletDevice(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
@@ -226,11 +337,16 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
   const [payosTransferMemo, setPayosTransferMemo] = useState<string>('');
   const [displayAccountNo, setDisplayAccountNo] = useState<string>('');
   const [displayAccountName, setDisplayAccountName] = useState<string>('');
+  const [displayBankCode, setDisplayBankCode] = useState<string>('');
   const [copiedField, setCopiedField] = useState<'memo' | 'account' | null>(null);
   const [isMobileOrTablet, setIsMobileOrTablet] = useState<boolean>(() =>
     detectIsMobileOrTabletDevice()
   );
-  const [bankAppFallbackNotice, setBankAppFallbackNotice] = useState<string | null>(null);
+  const [selectedBankAppNotice, setSelectedBankAppNotice] = useState<{
+    bankName: string;
+    deepLinkUrl: string;
+    autofill?: boolean;
+  } | null>(null);
   const [failedBankLogos, setFailedBankLogos] = useState<Record<string, boolean>>({});
   const deepLinkTimeoutRef = useRef<number | null>(null);
 
@@ -311,8 +427,9 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       setQrImageSrc('');
       setRawEmvQrString('');
       setPayosTransferMemo('');
+      setDisplayBankCode('');
       setCopiedField(null);
-      setBankAppFallbackNotice(null);
+      setSelectedBankAppNotice(null);
       if (deepLinkTimeoutRef.current) {
         window.clearTimeout(deepLinkTimeoutRef.current);
         deepLinkTimeoutRef.current = null;
@@ -350,6 +467,7 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     setPayosTransferMemo(cleanDescription);
     setDisplayAccountNo(effectiveAccountNo);
     setDisplayAccountName(effectiveAccountName);
+    setDisplayBankCode(resolveVietQrBankCode(effectiveBankId));
 
     let isCancelled = false;
 
@@ -458,6 +576,11 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
           }
           if (payosData?.accountName && typeof payosData.accountName === 'string') {
             setDisplayAccountName(payosData.accountName);
+          }
+          if (payosData?.bin || payosData?.bankCode) {
+            setDisplayBankCode(
+              resolveVietQrBankCode(payosData.bin || payosData.bankCode, effectiveBankId)
+            );
           }
         }
 
@@ -619,6 +742,7 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
   const activeMemo = payosTransferMemo || cleanDescription;
   const activeAccountNo = displayAccountNo || effectiveAccountNo;
   const activeAccountName = displayAccountName || effectiveAccountName;
+  const activeBankCode = displayBankCode || resolveVietQrBankCode(effectiveBankId);
 
   const handleCopyText = (text: string, type: 'memo' | 'account') => {
     try {
@@ -628,64 +752,19 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     } catch {}
   };
 
-  const handleOpenBankApp = (bank: BankDeepLinkItem) => {
-    setBankAppFallbackNotice(null);
-    if (deepLinkTimeoutRef.current) {
-      window.clearTimeout(deepLinkTimeoutRef.current);
-      deepLinkTimeoutRef.current = null;
-    }
-
-    const qrPayload = (rawEmvQrString || cleanDescription || '').trim();
-    const deepLinkUrl = `${bank.scheme}qr?data=${encodeURIComponent(qrPayload)}`;
-
-    let didLeaveBrowser = false;
-    const handleVisibilityOrBlur = () => {
-      if (document.hidden || document.visibilityState === 'hidden') {
-        didLeaveBrowser = true;
-        if (deepLinkTimeoutRef.current) {
-          window.clearTimeout(deepLinkTimeoutRef.current);
-          deepLinkTimeoutRef.current = null;
-        }
-      }
-    };
-
-    const handlePageBlur = () => {
-      didLeaveBrowser = true;
-      if (deepLinkTimeoutRef.current) {
-        window.clearTimeout(deepLinkTimeoutRef.current);
-        deepLinkTimeoutRef.current = null;
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityOrBlur);
-    window.addEventListener('pagehide', handlePageBlur);
-    window.addEventListener('blur', handlePageBlur);
-
-    const cleanupListeners = () => {
-      document.removeEventListener('visibilitychange', handleVisibilityOrBlur);
-      window.removeEventListener('pagehide', handlePageBlur);
-      window.removeEventListener('blur', handlePageBlur);
-    };
-
-    // Cơ chế Fallback an toàn sau 1.8 giây nếu trình duyệt không chuyển hướng sang ứng dụng ngân hàng
-    deepLinkTimeoutRef.current = window.setTimeout(() => {
-      cleanupListeners();
-      deepLinkTimeoutRef.current = null;
-      if (!didLeaveBrowser && !document.hidden && document.visibilityState !== 'hidden') {
-        setBankAppFallbackNotice('Ứng dụng ngân hàng chưa được cài đặt');
-      }
-    }, 1800);
-
+  const handleOpenBankApp = (bank: BankDeepLinkItem, deepLinkUrl: string) => {
+    // Tự động sao chép STK để hỗ trợ dán nhanh nếu ngân hàng chưa hỗ trợ autofill
     try {
-      window.location.href = deepLinkUrl;
-    } catch {
-      cleanupListeners();
-      if (deepLinkTimeoutRef.current) {
-        window.clearTimeout(deepLinkTimeoutRef.current);
-        deepLinkTimeoutRef.current = null;
-      }
-      setBankAppFallbackNotice('Ứng dụng ngân hàng chưa được cài đặt');
-    }
+      navigator.clipboard.writeText(activeAccountNo);
+      setCopiedField('account');
+      setTimeout(() => setCopiedField(null), 2500);
+    } catch {}
+
+    setSelectedBankAppNotice({
+      bankName: bank.name,
+      deepLinkUrl,
+      autofill: bank.autofill,
+    });
   };
 
   const handleCloseModal = () => {
@@ -905,54 +984,104 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
                         </span>
                       </div>
 
-                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                        {SUPPORTED_BANK_APPS.map((bank) => (
-                          <button
-                            key={bank.id}
-                            type="button"
-                            onClick={() => handleOpenBankApp(bank)}
-                            className="flex flex-col items-center justify-center p-2.5 rounded-xl border border-slate-200 bg-white hover:border-[#0072B5]/50 hover:bg-blue-50/40 active:scale-95 active:bg-blue-50 transition-all cursor-pointer min-h-[68px]"
-                          >
-                            <div className="h-7 w-full flex items-center justify-center mb-1">
-                              {failedBankLogos[bank.id] ? (
-                                <span className="text-xs font-black text-[#0072B5]">
-                                  {bank.id}
+                      <div className="grid grid-cols-4 gap-2">
+                        {SUPPORTED_BANK_APPS.map((bank) => {
+                          const deepLinkUrl = buildVietQrDeepLinkUrl({
+                            appId: bank.appId,
+                            accountNo: activeAccountNo,
+                            bankCode: activeBankCode,
+                            accountName: activeAccountName,
+                            amount: Number(amount) || 0,
+                            memo: activeMemo,
+                          });
+
+                          return (
+                            <a
+                              key={bank.id}
+                              href={deepLinkUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => handleOpenBankApp(bank, deepLinkUrl)}
+                              className="relative flex flex-col items-center justify-center p-2 rounded-xl border border-slate-200 bg-white hover:border-[#0072B5]/50 hover:bg-blue-50/40 active:scale-95 active:bg-blue-50 transition-all cursor-pointer min-h-[68px] no-underline"
+                            >
+                              {bank.autofill && (
+                                <span
+                                  title="Tự động điền thông tin chuyển khoản"
+                                  className="absolute top-1 right-1 px-1 py-0.2 rounded bg-emerald-100 text-emerald-700 text-[8px] font-black uppercase leading-tight"
+                                >
+                                  Tự điền
                                 </span>
-                              ) : (
-                                <img
-                                  src={bank.logo}
-                                  alt={bank.name}
-                                  referrerPolicy="no-referrer"
-                                  className="h-6 w-auto max-w-[76px] object-contain mx-auto"
-                                  onError={() =>
-                                    setFailedBankLogos((prev) => ({
-                                      ...prev,
-                                      [bank.id]: true,
-                                    }))
-                                  }
-                                />
                               )}
-                            </div>
-                            <span className="text-[11px] font-bold text-slate-700 text-center leading-tight truncate w-full">
-                              {bank.name}
-                            </span>
-                          </button>
-                        ))}
+                              <div className="h-7 w-full flex items-center justify-center mb-1">
+                                {failedBankLogos[bank.id] ? (
+                                  <span className="text-xs font-black text-[#0072B5]">
+                                    {bank.id}
+                                  </span>
+                                ) : (
+                                  <img
+                                    src={bank.logo}
+                                    alt={bank.name}
+                                    referrerPolicy="no-referrer"
+                                    className="h-6 w-auto max-w-[70px] object-contain mx-auto"
+                                    onError={() =>
+                                      setFailedBankLogos((prev) => ({
+                                        ...prev,
+                                        [bank.id]: true,
+                                      }))
+                                    }
+                                  />
+                                )}
+                              </div>
+                              <span className="text-[11px] font-bold text-slate-700 text-center leading-tight truncate w-full">
+                                {bank.name}
+                              </span>
+                            </a>
+                          );
+                        })}
                       </div>
 
-                      {bankAppFallbackNotice && (
-                        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold animate-fade-in">
-                          <div className="flex items-center gap-1.5">
-                            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-                            <span>{bankAppFallbackNotice}</span>
+                      {selectedBankAppNotice && (
+                        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 text-[#0B486B] text-xs animate-fade-in">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="space-y-0.5">
+                              <div className="font-extrabold text-[#0B486B]">
+                                Đang mở ứng dụng {selectedBankAppNotice.bankName} &amp; đã sao chép STK ({activeAccountNo})
+                              </div>
+                              <div className="text-[11px] text-slate-600 font-medium">
+                                {selectedBankAppNotice.autofill
+                                  ? 'Thông tin Số tài khoản, Số tiền và Nội dung chuyển khoản được truyền tự động sang ứng dụng ngân hàng.'
+                                  : 'Nếu ứng dụng yêu cầu quét mã hoặc nhập STK, bạn có thể dán ngay STK đã sao chép hoặc lưu ảnh mã QR ở trên.'}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedBankAppNotice(null)}
+                              className="text-[11px] font-extrabold text-slate-500 hover:text-slate-800 cursor-pointer shrink-0"
+                            >
+                              Đóng
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setBankAppFallbackNotice(null)}
-                            className="text-[11px] font-extrabold text-amber-700 hover:text-amber-950 cursor-pointer shrink-0"
-                          >
-                            Đóng
-                          </button>
+
+                          <div className="flex items-center gap-2 pt-0.5 flex-wrap">
+                            <a
+                              href={selectedBankAppNotice.deepLinkUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 rounded-lg bg-[#0072B5] text-white text-[11px] font-extrabold hover:bg-[#0B486B] transition-colors no-underline"
+                            >
+                              Mở lại {selectedBankAppNotice.bankName}
+                            </a>
+                            {checkoutUrl && (
+                              <a
+                                href={checkoutUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-2.5 py-1 rounded-lg bg-white border border-blue-300 text-[#0072B5] text-[11px] font-extrabold hover:bg-blue-50 transition-colors no-underline"
+                              >
+                                Mở trang thanh toán PayOS
+                              </a>
+                            )}
+                          </div>
                         </div>
                       )}
                     </>
