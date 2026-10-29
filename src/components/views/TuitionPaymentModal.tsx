@@ -61,7 +61,7 @@ const POPULAR_BANKS: BankDeepLinkItem[] = [
   },
   {
     id: 'AGB',
-    appId: 'agribank',
+    appId: 'vba',
     name: 'Agribank',
     logo: 'https://api.vietqr.io/img/VBA.png',
   },
@@ -122,6 +122,30 @@ const BANK_CODE_TO_BIN: Record<string, string> = {
   STB: '970403',
   SACOMBANK: '970403',
 };
+
+function normalizeVietQrAppId(appId: string): string {
+  const clean = String(appId || '').trim().toLowerCase();
+  const appIdAliasMap: Record<string, string> = {
+    agribank: 'vba',
+    agb: 'vba',
+    vba: 'vba',
+    mbbank: 'mb',
+    mb: 'mb',
+    vietcombank: 'vcb',
+    vcb: 'vcb',
+    techcombank: 'tcb',
+    tcb: 'tcb',
+    bidv: 'bidv',
+    vpbank: 'vpb',
+    vpb: 'vpb',
+    tpbank: 'tpb',
+    tpb: 'tpb',
+    vietinbank: 'icb',
+    ctg: 'icb',
+    icb: 'icb',
+  };
+  return appIdAliasMap[clean] || clean;
+}
 
 function resolveBankBinCode(binOrBankId?: string, fallbackBankId?: string): string {
   const raw = String(binOrBankId || '').trim();
@@ -737,7 +761,8 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     } catch {}
 
     // Bước 2: Tạo link chuyển hướng theo chuẩn Universal Link của Napas/VietQR
-    const vietQrUrl = `https://dl.vietqr.io/pay?app=${bank.appId}&ba=${accountNumber}@${bin}&am=${paymentAmount}&tn=${encodeURIComponent(
+    const targetAppId = normalizeVietQrAppId(bank.appId);
+    const vietQrUrl = `https://dl.vietqr.io/pay?app=${targetAppId}&ba=${accountNumber}@${bin}&am=${paymentAmount}&tn=${encodeURIComponent(
       description
     )}`;
 
