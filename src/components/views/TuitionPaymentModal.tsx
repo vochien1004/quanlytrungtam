@@ -14,6 +14,7 @@ import {
   Sparkles,
   Smartphone,
   AlertCircle,
+  Download,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -44,6 +45,7 @@ interface PayOSPaymentData {
   amount: number;
   description: string;
   accountName: string;
+  qrCodeUrl: string;
 }
 
 const POPULAR_BANKS: BankDeepLinkItem[] = [
@@ -312,8 +314,11 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
     amount: 0,
     description: '',
     accountName: '',
+    qrCodeUrl: '',
   });
   const [copiedField, setCopiedField] = useState<'memo' | 'account' | null>(null);
+  const [isDownloadingQr, setIsDownloadingQr] = useState<boolean>(false);
+  const [isQrSavedNotice, setIsQrSavedNotice] = useState<boolean>(false);
   const [isMobileOrTablet, setIsMobileOrTablet] = useState<boolean>(() =>
     detectIsMobileOrTabletDevice()
   );
@@ -399,6 +404,7 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       setRawEmvQrString('');
       setPayosTransferMemo('');
       setCopiedField(null);
+      setIsQrSavedNotice(false);
       setBankAppFallbackNotice(null);
       if (deepLinkTimeoutRef.current) {
         window.clearTimeout(deepLinkTimeoutRef.current);
@@ -443,6 +449,7 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       amount: Number(amount) || 0,
       description: cleanDescription,
       accountName: effectiveAccountName,
+      qrCodeUrl: fallbackVietQrUrl,
     });
 
     let isCancelled = false;
@@ -565,13 +572,14 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
           setPayosTransferMemo(nextDesc);
           setDisplayAccountNo(nextAccNo);
           setDisplayAccountName(nextAccName);
-          setPaymentData({
+          setPaymentData((prev) => ({
+            ...prev,
             accountNumber: nextAccNo,
             bin: nextBin,
             amount: nextAmount,
             description: nextDesc,
             accountName: nextAccName,
-          });
+          }));
         }
 
         if (returnedQrCode && !isCancelled) {
@@ -579,6 +587,10 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
           const resolvedImg = await resolveQrCodeToImageSrc(String(returnedQrCode));
           if (!isCancelled && resolvedImg) {
             setQrImageSrc(resolvedImg);
+            setPaymentData((prev) => ({
+              ...prev,
+              qrCodeUrl: resolvedImg,
+            }));
             setIsConnectingPayOS(false);
             return;
           }
@@ -586,11 +598,19 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
 
         if (!isCancelled) {
           setQrImageSrc(fallbackVietQrUrl);
+          setPaymentData((prev) => ({
+            ...prev,
+            qrCodeUrl: fallbackVietQrUrl,
+          }));
         }
       } catch (err) {
         console.warn('Lưu ý kết nối cổng payOS create-payment, dùng VietQR dự phòng:', err);
         if (!isCancelled) {
           setQrImageSrc(fallbackVietQrUrl);
+          setPaymentData((prev) => ({
+            ...prev,
+            qrCodeUrl: fallbackVietQrUrl,
+          }));
         }
       } finally {
         if (!isCancelled) {
@@ -739,6 +759,46 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
       setCopiedField(type);
       setTimeout(() => setCopiedField(null), 2000);
     } catch {}
+  };
+
+  const handleDownloadQrCode = async () => {
+    const targetUrl = paymentData.qrCodeUrl || qrImageSrc || fallbackVietQrUrl;
+    if (!targetUrl || isDownloadingQr) return;
+
+    const fileName = `QR-HocPhi-${orderCode || 'ThanhToan'}.png`;
+    setIsDownloadingQr(true);
+
+    try {
+      let downloadHref = targetUrl;
+      let shouldRevokeObjectUrl = false;
+
+      if (!targetUrl.startsWith('data:image/')) {
+        try {
+          const response = await fetch(targetUrl, { mode: 'cors' });
+          const blob = await response.blob();
+          downloadHref = URL.createObjectURL(blob);
+          shouldRevokeObjectUrl = true;
+        } catch {
+          downloadHref = targetUrl;
+        }
+      }
+
+      const link = document.createElement('a');
+      link.href = downloadHref;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      if (shouldRevokeObjectUrl) {
+        setTimeout(() => URL.revokeObjectURL(downloadHref), 3000);
+      }
+
+      setIsQrSavedNotice(true);
+      setTimeout(() => setIsQrSavedNotice(false), 3000);
+    } finally {
+      setIsDownloadingQr(false);
+    }
   };
 
   const handleOpenBankApp = (bank: BankDeepLinkItem) => {
@@ -997,18 +1057,62 @@ export const TuitionPaymentModal: React.FC<TuitionPaymentModalProps> = ({
                         className="w-64 sm:w-72 h-auto max-w-full object-contain rounded-xl mx-auto"
                         onError={() => {
                           if (rawEmvQrString) {
-                            setQrImageSrc(
-                              `https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=10&data=${encodeURIComponent(
-                                rawEmvQrString
-                              )}`
-                            );
+                            const backupQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=10&data=${encodeURIComponent(
+                              rawEmvQrString
+                            )}`;
+                            setQrImageSrc(backupQrUrl);
+                            setPaymentData((prev) => ({
+                              ...prev,
+                              qrCodeUrl: backupQrUrl,
+                            }));
                           } else if (qrImageSrc !== fallbackVietQrUrl) {
                             setQrImageSrc(fallbackVietQrUrl);
+                            setPaymentData((prev) => ({
+                              ...prev,
+                              qrCodeUrl: fallbackVietQrUrl,
+                            }));
                           }
                         }}
                       />
                     </div>
-                    <div className="flex items-center gap-2 mt-3 text-xs font-bold text-[#0B486B] text-center">
+
+                    {/* Nút Lưu mã QR về máy ngay bên dưới mã QR */}
+                    <div className="w-full max-w-xs mt-3.5 flex flex-col items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDownloadQrCode}
+                        disabled={isDownloadingQr}
+                        className={`w-full py-2.5 px-4 rounded-xl font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer ${
+                          isQrSavedNotice
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-gradient-to-r from-[#0072B5] to-[#0B486B] hover:from-[#0B486B] hover:to-[#0072B5] text-white active:scale-98'
+                        }`}
+                      >
+                        {isDownloadingQr ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                            <span>Đang tải mã QR...</span>
+                          </>
+                        ) : isQrSavedNotice ? (
+                          <>
+                            <Check className="w-4 h-4 shrink-0" />
+                            <span>Đã lưu QR-HocPhi-{orderCode}.png</span>
+                          </>
+                        ) : (
+                          <>
+                            <Download className="w-4 h-4 shrink-0" />
+                            <span>Lưu mã QR về máy</span>
+                          </>
+                        )}
+                      </button>
+
+                      <p className="text-[11px] font-semibold text-slate-500 text-center leading-snug">
+                        Mẹo: Bấm <strong>Lưu mã QR về máy</strong> &rarr; Mở App Ngân hàng chọn{' '}
+                        <strong>Quét QR</strong> &rarr; <strong>Chọn ảnh từ thư viện</strong> để tự động điền đủ số tiền &amp; nội dung.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-2.5 text-xs font-bold text-[#0B486B] text-center">
                       <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
                       <span>
                         Quét mã VietQR chuẩn payOS bằng App Ngân hàng — Tự động xác nhận khi hoàn tất chuyển khoản
