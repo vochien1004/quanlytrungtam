@@ -515,16 +515,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
             </form>
           )}
 
-          {/* Real Firebase Auth Notice */}
-          <div className="mt-6 pt-4 border-t border-slate-100 text-center space-y-1">
-            <div className="text-[11px] font-extrabold text-[#0B486B] flex items-center justify-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Xác Thực Thực Tế Trên Firebase Auth &amp; Firestore</span>
-            </div>
-            <p className="text-[10px] text-slate-500 font-medium">
-              Tài khoản được lưu trữ và truy vấn thời gian thực trên Cloud Firestore (collections <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded font-mono">global_users</code>, <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded font-mono">users</code>, <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded font-mono">accounts</code>).
-            </p>
-          </div>
+          
         </div>
       </div>
 
