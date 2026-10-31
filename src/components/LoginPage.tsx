@@ -252,7 +252,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
               {authMode === 'login' ? 'Đăng Nhập Trung Tâm' : 'Đăng Ký Khởi Tạo Trung Tâm'}
             </h1>
             <p className="text-xs text-slate-500 mt-1 font-medium">
-              Hệ thống Quản lý Đa Trung Tâm Multi-Tenant Dữ Liệu Tách Biệt
+              Hệ thống Quản lý Trung Tâm Dạy Thêm - Học Thêm
             </p>
           </div>
 
