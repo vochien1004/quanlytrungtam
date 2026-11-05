@@ -225,7 +225,7 @@ export const CenterManagementView: React.FC<CenterManagementViewProps> = ({
       resolvedPlanCode &&
       resolvedPlanCode !== rawPackagePlan
     ) {
-      updateCenter(currentCenter.id, { packagePlan: resolvedPlanCode }).catch(() => {});
+      updateCenter(currentCenter.id, { packagePlan: resolvedPlanCode as any }).catch(() => {});
     }
   }, [currentCenter?.id, isTrialPlanName, resolvedPlanCode, rawPackagePlan]);
 

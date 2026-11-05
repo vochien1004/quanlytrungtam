@@ -616,8 +616,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           attended++;
           return 'X';
         }
-        if (statusStr === 'excused' || statusStr.includes('phép')) return 'P';
-        if (statusStr === 'unexcused' || statusStr === 'absent' || statusStr.includes('không phép')) return 'K';
         return '';
       });
       if (showFinancials) {
@@ -1291,14 +1289,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                                     marker = 'X';
                                     markerClass = 'font-black text-[#0B486B] text-xs';
                                     titleText = `Ngày ${dStr}: Có mặt (tính tiền)`;
-                                  } else if (stStatus === 'excused' || stStatus.includes('phép')) {
-                                    marker = 'P';
-                                    markerClass = 'font-bold text-[#F39C12] text-[11px]';
-                                    titleText = `Ngày ${dStr}: Vắng có phép`;
-                                  } else if (stStatus === 'unexcused' || stStatus === 'absent' || stStatus.includes('không phép')) {
-                                    marker = 'K';
-                                    markerClass = 'font-bold text-[#E74C3C] text-[11px]';
-                                    titleText = `Ngày ${dStr}: Vắng không phép`;
+                                  } else if (
+                                    stStatus === 'excused' ||
+                                    stStatus === 'unexcused' ||
+                                    stStatus === 'absent' ||
+                                    stStatus.includes('phép') ||
+                                    stStatus.includes('vắng')
+                                  ) {
+                                    marker = '';
+                                    titleText = `Ngày ${dStr}: Vắng mặt`;
                                   }
                                 }
 
@@ -1421,22 +1420,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                       </span>
                       <span>Có mặt (tính tiền)</span>
                     </span>
-                    <span className="inline-flex items-center gap-1.5 font-bold">
-                      <span className="w-5 h-5 rounded-md bg-amber-100 text-[#F39C12] font-black inline-flex items-center justify-center text-xs">
-                        P
-                      </span>
-                      <span>Vắng có phép</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 font-bold">
-                      <span className="w-5 h-5 rounded-md bg-rose-100 text-[#E74C3C] font-black inline-flex items-center justify-center text-xs">
-                        K
-                      </span>
-                      <span>Vắng không phép</span>
-                    </span>
                   </div>
 
                   <p className="text-[11px] text-slate-500 italic">
-                    * Ô trống: Ngày không có buổi học hoặc chưa ghi nhận điểm danh trên Firebase
+                    * Ô trống: Vắng mặt, ngày không có buổi học hoặc chưa ghi nhận điểm danh
                   </p>
                   {/* Công thức tính Tổng tiền - Ẩn đối với giáo viên, chỉ hiển thị đối với center_admin */}
                   {showFinancials && (

@@ -20,6 +20,7 @@ export interface ClassItem {
 
 export interface TeacherItem {
   id: string;
+  uid?: string;
   centerId?: string; // Mã Trung Tâm trực thuộc
   teacherCode?: string; // Mã giáo viên (VD: GV-01, GV-TOAN)
   name: string;

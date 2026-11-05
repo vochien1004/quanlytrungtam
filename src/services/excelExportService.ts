@@ -305,14 +305,11 @@ function buildClassAttendanceWorksheet({
       const sRec = rec?.records?.find((r: any) => r.studentId === st.id || r.id === st.id);
 
       if (sRec) {
-        if (sRec.status === 'present') {
+        const stStatus = String(sRec.status || '').toLowerCase();
+        if (stStatus === 'present' || stStatus === 'late' || stStatus.includes('có mặt')) {
           attendedCount++;
           dailyPresents[dIdx]++;
           studentRow.push('X');
-        } else if (sRec.status === 'excused') {
-          studentRow.push('P');
-        } else if (sRec.status === 'unexcused') {
-          studentRow.push('K');
         } else {
           studentRow.push('');
         }
@@ -369,7 +366,7 @@ function buildClassAttendanceWorksheet({
   // Ghi chú 1
   const note1RowIdx = rows.length;
   const note1Row = new Array(totalCols).fill('');
-  note1Row[0] = '* Ghi chú: X = Có mặt (tính tiền) | P = Vắng có phép | K = Vắng không phép | Ô trống = Chưa điểm danh';
+  note1Row[0] = '* Ghi chú: X = Có mặt (tính tiền) | Ô trống = Vắng mặt hoặc chưa điểm danh';
   rows.push(note1Row);
 
   // Ghi chú 2 (nếu có tài chính)
