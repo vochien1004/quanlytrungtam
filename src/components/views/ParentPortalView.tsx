@@ -384,8 +384,16 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
     setExpandedHomeworkIds({});
   };
 
-  // Accordion state: Quản lý danh sách ID nhận xét đang được xổ xuống theo ngày buổi học
+  // Accordion state: Quản lý danh sách Tháng/Năm và ID nhận xét đang được xổ xuống theo ngày buổi học
+  const [expandedRemarkMonths, setExpandedRemarkMonths] = useState<Record<string, boolean>>({});
   const [expandedRemarkIds, setExpandedRemarkIds] = useState<Record<string, boolean>>({});
+
+  const toggleRemarkMonthExpand = (monthKey: string) => {
+    setExpandedRemarkMonths((prev) => ({
+      ...prev,
+      [monthKey]: !prev[monthKey],
+    }));
+  };
 
   const toggleRemarkExpand = (id: string) => {
     setExpandedRemarkIds((prev) => ({
@@ -395,14 +403,21 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
   };
 
   const expandAllRemarks = () => {
-    const next: Record<string, boolean> = {};
-    timelineRemarks.forEach((r) => {
-      next[r.id] = true;
+    const nextMonths: Record<string, boolean> = {};
+    groupedRemarksByMonth.forEach((g) => {
+      nextMonths[g.monthKey] = true;
     });
-    setExpandedRemarkIds(next);
+    setExpandedRemarkMonths(nextMonths);
+
+    const nextRemarks: Record<string, boolean> = {};
+    timelineRemarks.forEach((r) => {
+      nextRemarks[r.id] = true;
+    });
+    setExpandedRemarkIds(nextRemarks);
   };
 
   const collapseAllRemarks = () => {
+    setExpandedRemarkMonths({});
     setExpandedRemarkIds({});
   };
 
@@ -1072,20 +1087,54 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       return [];
     }
 
+    const extractMonthInfo = (rawIsoDate?: string, displayDate?: string) => {
+      if (rawIsoDate && /^\d{4}-\d{2}/.test(rawIsoDate)) {
+        const [y, m] = rawIsoDate.split('-');
+        return {
+          monthKey: `${y}-${m.padStart(2, '0')}`,
+          monthLabel: `Tháng ${m.padStart(2, '0')}/${y}`,
+        };
+      }
+      if (displayDate && displayDate.includes('/')) {
+        const parts = displayDate.split('/');
+        if (parts.length === 3) {
+          const m = parts[1].padStart(2, '0');
+          const y = parts[2];
+          return {
+            monthKey: `${y}-${m}`,
+            monthLabel: `Tháng ${m}/${y}`,
+          };
+        }
+      }
+      const now = new Date();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const y = String(now.getFullYear());
+      return {
+        monthKey: `${y}-${m}`,
+        monthLabel: `Tháng ${m}/${y}`,
+      };
+    };
+
     const commentsFromAttendance = studentAttendanceHistory
       .filter((r) => r.note && r.note.trim().length > 0)
-      .map((r, idx) => ({
-        id: `att_comment_${r.id || idx}`,
-        teacherName: r.teacherName,
-        teacherRole: 'Giáo viên phụ trách',
-        subject: currentClass?.subject || 'Bộ môn',
-        date: r.formattedDate,
-        time: r.shift || '18:00 - 20:00',
-        content: r.note,
-        homeworkStatus: r.status === 'present' ? 'Có mặt đầy đủ' : 'Nghỉ có phép',
-        highlightBadge: r.status === 'present' ? 'Đánh Giá Buổi Học' : 'Ghi Nhận Vắng',
-        badgeStyle: r.status === 'present' ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300',
-      }));
+      .map((r, idx) => {
+        const { monthKey, monthLabel } = extractMonthInfo(r.date, r.formattedDate);
+        return {
+          id: `att_comment_${r.id || idx}`,
+          teacherName: r.teacherName,
+          teacherRole: 'Giáo viên phụ trách',
+          subject: currentClass?.subject || 'Bộ môn',
+          date: r.formattedDate,
+          rawDate: r.date,
+          monthKey,
+          monthLabel,
+          time: r.shift || '18:00 - 20:00',
+          content: r.note,
+          homeworkStatus: r.status === 'present' ? 'Có mặt đầy đủ' : 'Nghỉ có phép',
+          highlightBadge: r.status === 'present' ? 'Đánh Giá Buổi Học' : 'Ghi Nhận Vắng',
+          badgeStyle: r.status === 'present' ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300',
+        };
+      });
 
     if (
       commentsFromAttendance.length === 0 &&
@@ -1094,12 +1143,17 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
       currentStudent.note !== 'Học sinh mới tiếp nhận' &&
       currentStudent.note !== 'Chưa có nhận xét.'
     ) {
+      const todayFormatted = new Date().toLocaleDateString('vi-VN');
+      const { monthKey, monthLabel } = extractMonthInfo(undefined, todayFormatted);
       commentsFromAttendance.push({
         id: `student_note_${currentStudent.id}`,
         teacherName: teacherDisplayName,
         teacherRole: 'GVCN Lớp',
         subject: currentClass?.subject || 'Bộ môn',
-        date: new Date().toLocaleDateString('vi-VN'),
+        date: todayFormatted,
+        rawDate: new Date().toISOString().slice(0, 10),
+        monthKey,
+        monthLabel,
         time: currentClass?.schedule || 'Ghi chú lớp học',
         content: currentStudent.note,
         homeworkStatus: 'Ghi chú học tập',
@@ -1110,6 +1164,42 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
 
     return commentsFromAttendance;
   }, [hasAnyStudent, studentAttendanceHistory, currentStudent, currentClass, teacherDisplayName]);
+
+  // Nhóm danh sách nhận xét theo Tháng/Năm (sắp xếp tháng mới nhất lên đầu)
+  const groupedRemarksByMonth = useMemo(() => {
+    const groupsMap = new Map<
+      string,
+      {
+        monthKey: string;
+        monthLabel: string;
+        remarks: typeof timelineRemarks;
+        presentCount: number;
+        absentCount: number;
+      }
+    >();
+
+    timelineRemarks.forEach((remark) => {
+      const key = remark.monthKey || 'unknown';
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, {
+          monthKey: key,
+          monthLabel: remark.monthLabel || 'Tháng hiện tại',
+          remarks: [],
+          presentCount: 0,
+          absentCount: 0,
+        });
+      }
+      const group = groupsMap.get(key)!;
+      group.remarks.push(remark);
+      if (remark.highlightBadge === 'Ghi Nhận Vắng') {
+        group.absentCount += 1;
+      } else {
+        group.presentCount += 1;
+      }
+    });
+
+    return Array.from(groupsMap.values()).sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+  }, [timelineRemarks]);
 
   // 1. Chỉ lấy những bài tập được giao cho học sinh này hoặc lớp của học sinh này (không hiển thị bài tập lớp khác)
   const studentAssignments = useMemo(() => {
@@ -1953,13 +2043,13 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                   Timeline Nhận Xét Hàng Ngày Của Giáo Viên
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Nhấn vào ngày nhận xét bên dưới để xổ xuống xem chi tiết nhận xét của buổi học
+                  Chọn tháng/năm để xổ xuống danh sách các ngày học, sau đó nhấn vào từng ngày để xem chi tiết nhận xét
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <span className="text-xs font-extrabold text-[#0072B5] bg-blue-50 px-3 py-1.5 rounded-xl border border-blue-200">
-                  {timelineRemarks.length} nhận xét
+                  {groupedRemarksByMonth.length} tháng &bull; {timelineRemarks.length} nhận xét
                 </span>
                 {timelineRemarks.length > 0 && (
                   <>
@@ -1967,7 +2057,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                       type="button"
                       onClick={expandAllRemarks}
                       className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
-                      title="Mở tất cả nhận xét"
+                      title="Mở tất cả các tháng và nhận xét"
                     >
                       <ChevronDown className="w-3.5 h-3.5 text-slate-600" />
                       <span>Mở tất cả</span>
@@ -1976,7 +2066,7 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
                       type="button"
                       onClick={collapseAllRemarks}
                       className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
-                      title="Thu gọn danh sách nhận xét"
+                      title="Thu gọn toàn bộ danh sách"
                     >
                       <ChevronUp className="w-3.5 h-3.5 text-slate-600" />
                       <span>Thu gọn</span>
@@ -1986,178 +2076,297 @@ export const ParentPortalView: React.FC<ParentPortalViewProps> = ({
               </div>
             </div>
 
-            {/* Timeline Stream (Collapsible Accordion by Date) */}
-            {timelineRemarks.length === 0 ? (
+            {/* Timeline Stream: Cấp 1 - Xổ xuống theo Tháng/Năm -> Cấp 2 - Xổ xuống theo Ngày buổi học */}
+            {groupedRemarksByMonth.length === 0 ? (
               <div className="py-10 text-center text-slate-400 text-xs font-medium">
                 Chưa có nhận xét nào từ giáo viên cho học sinh này.
               </div>
             ) : (
-              <div className="mt-4 relative pl-5 sm:pl-6 space-y-3 before:absolute before:left-2 before:top-3 before:bottom-3 before:w-0.5 before:bg-blue-100">
-                {timelineRemarks.map((remark) => {
-                  const isExpanded = !!expandedRemarkIds[remark.id];
-                  const hasReplied = Boolean(parentReplies[remark.id]);
+              <div className="mt-4 space-y-4">
+                {groupedRemarksByMonth.map((monthGroup) => {
+                  const isMonthExpanded = !!expandedRemarkMonths[monthGroup.monthKey];
 
                   return (
-                    <div key={remark.id} className="relative group">
-                      {/* Timeline bullet dot */}
-                      <span
-                        className={`absolute -left-5 sm:-left-6 top-4 w-3.5 h-3.5 rounded-full transition-all shadow-xs ${
-                          isExpanded
-                            ? 'bg-[#0072B5] ring-4 ring-blue-100 scale-110'
-                            : 'bg-blue-400 ring-3 ring-slate-100 group-hover:bg-[#0072B5]'
-                        }`}
-                      />
-
-                      {/* Collapsible Card Container */}
+                    <div
+                      key={monthGroup.monthKey}
+                      className={`rounded-2xl border-2 transition-all overflow-hidden ${
+                        isMonthExpanded
+                          ? 'border-[#0072B5] bg-slate-50/40 shadow-sm'
+                          : 'border-slate-200 bg-white hover:border-[#0072B5]/70 shadow-2xs'
+                      }`}
+                    >
+                      {/* CẤP 1 - HEADER THÁNG/NĂM: Nhấn vào để xổ xuống danh sách các ngày nhận xét trong tháng */}
                       <div
-                        className={`rounded-2xl border-2 transition-all overflow-hidden ${
-                          isExpanded
-                            ? 'border-[#0072B5] bg-white shadow-md'
-                            : 'border-slate-200 bg-slate-50/60 hover:bg-white hover:border-[#0072B5]/60 shadow-2xs'
+                        onClick={() => toggleRemarkMonthExpand(monthGroup.monthKey)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleRemarkMonthExpand(monthGroup.monthKey);
+                          }
+                        }}
+                        title={
+                          isMonthExpanded
+                            ? `Nhấn để thu gọn ${monthGroup.monthLabel}`
+                            : `Nhấn để xổ xuống các buổi học trong ${monthGroup.monthLabel}`
+                        }
+                        className={`p-4 sm:px-5 cursor-pointer select-none transition-colors flex flex-wrap items-center justify-between gap-3 ${
+                          isMonthExpanded
+                            ? 'bg-gradient-to-r from-[#0B486B] to-[#0072B5] text-white'
+                            : 'bg-slate-50/80 hover:bg-blue-50/50 text-slate-800'
                         }`}
                       >
-                        {/* ACCORDION HEADER: Nhấn vào ngày nhận xét để xổ xuống / thu gọn */}
-                        <div
-                          onClick={() => toggleRemarkExpand(remark.id)}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              toggleRemarkExpand(remark.id);
-                            }
-                          }}
-                          title={isExpanded ? 'Nhấn để thu gọn nhận xét ngày này' : 'Nhấn để xổ xuống xem nhận xét buổi học'}
-                          className={`p-3.5 sm:p-4 cursor-pointer select-none transition-colors flex flex-wrap items-center justify-between gap-3 ${
-                            isExpanded
-                              ? 'bg-blue-50/50 border-b border-blue-100'
-                              : 'hover:bg-slate-50/90'
-                          }`}
-                        >
-                          {/* Left: Date Pill + Teacher Info */}
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <AccountAvatar
-                              name={remark.teacherName}
-                              role="teacher"
-                              size="md"
-                              className="ring-2 ring-blue-200 shadow-xs shrink-0"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-black text-[#0B486B] bg-blue-100/80 border border-blue-200 px-2.5 py-0.5 rounded-lg">
-                                  <Calendar className="w-3.5 h-3.5 text-[#0072B5]" />
-                                  Ngày {remark.date}
-                                </span>
-                                <span className="text-xs sm:text-sm font-black text-slate-800 truncate">
-                                  {remark.teacherName}
-                                </span>
-                                <span className="text-[11px] text-slate-500 font-semibold hidden sm:inline">
-                                  &bull; {remark.teacherRole} &bull; Môn {remark.subject}
-                                </span>
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] text-slate-500 font-medium">
-                                <span className="sm:hidden">
-                                  {remark.teacherRole} &bull; Môn {remark.subject}
-                                </span>
-                                <span className="inline-flex items-center gap-1 text-slate-500 font-semibold">
-                                  <Clock className="w-3 h-3 text-slate-400" />
-                                  {remark.time}
-                                </span>
-                              </div>
-                            </div>
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 font-black shadow-xs transition-colors ${
+                              isMonthExpanded
+                                ? 'bg-white/20 text-white border border-white/30'
+                                : 'bg-[#0072B5] text-white'
+                            }`}
+                          >
+                            <Calendar className="w-5 h-5" />
                           </div>
-
-                          {/* Right: Status Badge + Expand/Collapse Trigger */}
-                          <div className="flex items-center gap-2 shrink-0 ml-auto">
-                            {hasReplied && (
-                              <span className="hidden md:inline-flex items-center gap-1 text-[11px] font-bold text-[#00A86B] bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                <HeartHandshake className="w-3 h-3" />
-                                Đã phản hồi
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h4
+                                className={`text-sm sm:text-base font-black tracking-tight ${
+                                  isMonthExpanded ? 'text-white' : 'text-[#0B486B]'
+                                }`}
+                              >
+                                {monthGroup.monthLabel}
+                              </h4>
+                              <span
+                                className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border ${
+                                  isMonthExpanded
+                                    ? 'bg-white/20 text-white border-white/30'
+                                    : 'bg-blue-50 text-[#0072B5] border-blue-200'
+                                }`}
+                              >
+                                {monthGroup.remarks.length} buổi học
                               </span>
-                            )}
-                            <span
-                              className={`inline-block text-[11px] sm:text-xs font-black px-2.5 py-1 rounded-full border ${remark.badgeStyle}`}
-                            >
-                              {remark.highlightBadge}
-                            </span>
-                            <span
-                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all ${
-                                isExpanded
-                                  ? 'bg-[#0072B5] text-white border-[#0072B5]'
-                                  : 'bg-white text-[#0072B5] border-blue-200 group-hover:bg-blue-50'
+                            </div>
+                            <div
+                              className={`flex flex-wrap items-center gap-2 mt-1 text-[11px] font-semibold ${
+                                isMonthExpanded ? 'text-blue-100' : 'text-slate-500'
                               }`}
                             >
-                              <span className="hidden sm:inline">
-                                {isExpanded ? 'Thu gọn' : 'Xem nhận xét'}
-                              </span>
-                              {isExpanded ? (
-                                <ChevronUp className="w-4 h-4" />
-                              ) : (
-                                <ChevronDown className="w-4 h-4" />
+                              <span>{monthGroup.presentCount} buổi đánh giá học tập</span>
+                              {monthGroup.absentCount > 0 && (
+                                <>
+                                  <span>&bull;</span>
+                                  <span className={isMonthExpanded ? 'text-amber-200' : 'text-amber-700'}>
+                                    {monthGroup.absentCount} buổi ghi nhận vắng
+                                  </span>
+                                </>
                               )}
-                            </span>
+                            </div>
                           </div>
                         </div>
 
-                        {/* ACCORDION BODY: Nội dung nhận xét chi tiết & Phản hồi phụ huynh */}
-                        {isExpanded && (
-                          <div className="p-4 sm:p-5 bg-white space-y-3 animate-fade-in">
-                            {/* Comment Content Box */}
-                            <div className="rounded-xl bg-slate-50/80 p-3.5 border border-slate-200 shadow-2xs">
-                              <p className="text-xs sm:text-sm text-slate-700 leading-relaxed italic">
-                                &ldquo;{remark.content}&rdquo;
-                              </p>
-
-                              <div className="mt-3 pt-2.5 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-2 text-xs">
-                                <span className="font-bold text-emerald-700 flex items-center gap-1.5 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200/60">
-                                  <CheckCircle2 className="w-4 h-4 text-[#00A86B]" /> {remark.homeworkStatus}
-                                </span>
-                                <span className="text-[11px] font-semibold text-slate-400">
-                                  ✓ Đã gửi tin nhắn thông báo phụ huynh
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Parent Reply Section */}
-                            {parentReplies[remark.id] ? (
-                              <div className="rounded-xl bg-emerald-50/80 p-3 border border-emerald-300 text-xs text-emerald-950">
-                                <div className="flex items-center justify-between">
-                                  <span className="font-black text-xs text-[#00A86B] flex items-center gap-1">
-                                    <HeartHandshake className="w-3.5 h-3.5" />
-                                    Phản hồi của phụ huynh ({currentStudent.parentName || 'Phụ huynh'}):
-                                  </span>
-                                  <span className="text-[10px] text-emerald-700 font-semibold">Đã gửi tới GV</span>
-                                </div>
-                                <p className="mt-1 text-slate-700 italic font-medium">
-                                  &ldquo;{parentReplies[remark.id]}&rdquo;
-                                </p>
-                              </div>
+                        <div className="flex items-center gap-2 ml-auto shrink-0">
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                              isMonthExpanded
+                                ? 'bg-white text-[#0B486B] border-white shadow-xs'
+                                : 'bg-white text-[#0072B5] border-blue-200 hover:bg-blue-50'
+                            }`}
+                          >
+                            <span>
+                              {isMonthExpanded
+                                ? 'Thu gọn tháng'
+                                : `Xem ${monthGroup.remarks.length} ngày nhận xét`}
+                            </span>
+                            {isMonthExpanded ? (
+                              <ChevronUp className="w-4 h-4" />
                             ) : (
-                              <div className="flex items-center gap-2 pt-1">
-                                <input
-                                  type="text"
-                                  value={parentReplyInput[remark.id] || ''}
-                                  onChange={(e) => setParentReplyInput({ ...parentReplyInput, [remark.id]: e.target.value })}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') handleSendReply(remark.id);
-                                  }}
-                                  placeholder="Nhập lời cảm ơn hoặc nhắn lại cô giáo..."
-                                  className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-200"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => handleSendReply(remark.id)}
-                                  className="px-3.5 py-2 rounded-xl bg-[#0072B5] hover:bg-[#0B486B] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 active:scale-95 cursor-pointer"
-                                >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>Gửi</span>
-                                </button>
-                              </div>
+                              <ChevronDown className="w-4 h-4" />
                             )}
-                          </div>
-                        )}
+                          </span>
+                        </div>
                       </div>
+
+                      {/* CẤP 2 - DANH SÁCH NHẬN XÉT THEO NGÀY BUỔI HỌC BÊN TRONG THÁNG (GIỮ NGUYÊN DẠNG XỔ XUỐNG HIỆN CÓ) */}
+                      {isMonthExpanded && (
+                        <div className="p-4 sm:p-5 bg-white border-t border-slate-100 animate-fade-in">
+                          <div className="relative pl-5 sm:pl-6 space-y-3 before:absolute before:left-2 before:top-3 before:bottom-3 before:w-0.5 before:bg-blue-100">
+                            {monthGroup.remarks.map((remark) => {
+                              const isExpanded = !!expandedRemarkIds[remark.id];
+                              const hasReplied = Boolean(parentReplies[remark.id]);
+
+                              return (
+                                <div key={remark.id} className="relative group">
+                                  {/* Timeline bullet dot */}
+                                  <span
+                                    className={`absolute -left-5 sm:-left-6 top-4 w-3.5 h-3.5 rounded-full transition-all shadow-xs ${
+                                      isExpanded
+                                        ? 'bg-[#0072B5] ring-4 ring-blue-100 scale-110'
+                                        : 'bg-blue-400 ring-3 ring-slate-100 group-hover:bg-[#0072B5]'
+                                    }`}
+                                  />
+
+                                  {/* Collapsible Card Container by Date */}
+                                  <div
+                                    className={`rounded-2xl border-2 transition-all overflow-hidden ${
+                                      isExpanded
+                                        ? 'border-[#0072B5] bg-white shadow-md'
+                                        : 'border-slate-200 bg-slate-50/60 hover:bg-white hover:border-[#0072B5]/60 shadow-2xs'
+                                    }`}
+                                  >
+                                    {/* ACCORDION HEADER: Nhấn vào ngày nhận xét để xổ xuống / thu gọn */}
+                                    <div
+                                      onClick={() => toggleRemarkExpand(remark.id)}
+                                      role="button"
+                                      tabIndex={0}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          toggleRemarkExpand(remark.id);
+                                        }
+                                      }}
+                                      title={
+                                        isExpanded
+                                          ? 'Nhấn để thu gọn nhận xét ngày này'
+                                          : 'Nhấn để xổ xuống xem nhận xét buổi học'
+                                      }
+                                      className={`p-3.5 sm:p-4 cursor-pointer select-none transition-colors flex flex-wrap items-center justify-between gap-3 ${
+                                        isExpanded
+                                          ? 'bg-blue-50/50 border-b border-blue-100'
+                                          : 'hover:bg-slate-50/90'
+                                      }`}
+                                    >
+                                      {/* Left: Date Pill + Teacher Info */}
+                                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                                        <AccountAvatar
+                                          name={remark.teacherName}
+                                          role="teacher"
+                                          size="md"
+                                          className="ring-2 ring-blue-200 shadow-xs shrink-0"
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-black text-[#0B486B] bg-blue-100/80 border border-blue-200 px-2.5 py-0.5 rounded-lg">
+                                              <Calendar className="w-3.5 h-3.5 text-[#0072B5]" />
+                                              Ngày {remark.date}
+                                            </span>
+                                            <span className="text-xs sm:text-sm font-black text-slate-800 truncate">
+                                              {remark.teacherName}
+                                            </span>
+                                            <span className="text-[11px] text-slate-500 font-semibold hidden sm:inline">
+                                              &bull; {remark.teacherRole} &bull; Môn {remark.subject}
+                                            </span>
+                                          </div>
+
+                                          <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] text-slate-500 font-medium">
+                                            <span className="sm:hidden">
+                                              {remark.teacherRole} &bull; Môn {remark.subject}
+                                            </span>
+                                            <span className="inline-flex items-center gap-1 text-slate-500 font-semibold">
+                                              <Clock className="w-3 h-3 text-slate-400" />
+                                              {remark.time}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {/* Right: Status Badge + Expand/Collapse Trigger */}
+                                      <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                        {hasReplied && (
+                                          <span className="hidden md:inline-flex items-center gap-1 text-[11px] font-bold text-[#00A86B] bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                                            <HeartHandshake className="w-3 h-3" />
+                                            Đã phản hồi
+                                          </span>
+                                        )}
+                                        <span
+                                          className={`inline-block text-[11px] sm:text-xs font-black px-2.5 py-1 rounded-full border ${remark.badgeStyle}`}
+                                        >
+                                          {remark.highlightBadge}
+                                        </span>
+                                        <span
+                                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all ${
+                                            isExpanded
+                                              ? 'bg-[#0072B5] text-white border-[#0072B5]'
+                                              : 'bg-white text-[#0072B5] border-blue-200 group-hover:bg-blue-50'
+                                          }`}
+                                        >
+                                          <span className="hidden sm:inline">
+                                            {isExpanded ? 'Thu gọn' : 'Xem nhận xét'}
+                                          </span>
+                                          {isExpanded ? (
+                                            <ChevronUp className="w-4 h-4" />
+                                          ) : (
+                                            <ChevronDown className="w-4 h-4" />
+                                          )}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* ACCORDION BODY: Nội dung nhận xét chi tiết & Phản hồi phụ huynh */}
+                                    {isExpanded && (
+                                      <div className="p-4 sm:p-5 bg-white space-y-3 animate-fade-in">
+                                        {/* Comment Content Box */}
+                                        <div className="rounded-xl bg-slate-50/80 p-3.5 border border-slate-200 shadow-2xs">
+                                          <p className="text-xs sm:text-sm text-slate-700 leading-relaxed italic">
+                                            &ldquo;{remark.content}&rdquo;
+                                          </p>
+
+                                          <div className="mt-3 pt-2.5 border-t border-slate-200/70 flex flex-wrap items-center justify-between gap-2 text-xs">
+                                            <span className="font-bold text-emerald-700 flex items-center gap-1.5 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200/60">
+                                              <CheckCircle2 className="w-4 h-4 text-[#00A86B]" /> {remark.homeworkStatus}
+                                            </span>
+                                            <span className="text-[11px] font-semibold text-slate-400">
+                                              ✓ Đã gửi tin nhắn thông báo phụ huynh
+                                            </span>
+                                          </div>
+                                        </div>
+
+                                        {/* Parent Reply Section */}
+                                        {parentReplies[remark.id] ? (
+                                          <div className="rounded-xl bg-emerald-50/80 p-3 border border-emerald-300 text-xs text-emerald-950">
+                                            <div className="flex items-center justify-between">
+                                              <span className="font-black text-xs text-[#00A86B] flex items-center gap-1">
+                                                <HeartHandshake className="w-3.5 h-3.5" />
+                                                Phản hồi của phụ huynh ({currentStudent.parentName || 'Phụ huynh'}):
+                                              </span>
+                                              <span className="text-[10px] text-emerald-700 font-semibold">Đã gửi tới GV</span>
+                                            </div>
+                                            <p className="mt-1 text-slate-700 italic font-medium">
+                                              &ldquo;{parentReplies[remark.id]}&rdquo;
+                                            </p>
+                                          </div>
+                                        ) : (
+                                          <div className="flex items-center gap-2 pt-1">
+                                            <input
+                                              type="text"
+                                              value={parentReplyInput[remark.id] || ''}
+                                              onChange={(e) =>
+                                                setParentReplyInput({ ...parentReplyInput, [remark.id]: e.target.value })
+                                              }
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') handleSendReply(remark.id);
+                                              }}
+                                              placeholder="Nhập lời cảm ơn hoặc nhắn lại cô giáo..."
+                                              className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-200"
+                                            />
+                                            <button
+                                              type="button"
+                                              onClick={() => handleSendReply(remark.id)}
+                                              className="px-3.5 py-2 rounded-xl bg-[#0072B5] hover:bg-[#0B486B] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                                            >
+                                              <Send className="w-3.5 h-3.5" />
+                                              <span>Gửi</span>
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
